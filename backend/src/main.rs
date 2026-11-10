@@ -27,6 +27,7 @@ mod handoff;
 mod intro;
 mod live;
 mod metadata;
+mod episode_groups;
 mod nntp;
 mod nzb;
 mod pool;

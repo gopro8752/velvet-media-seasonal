@@ -103,15 +103,6 @@ final class CompanionApi: HomeCategoryService {
         return TVHandoffClient(baseURL: cfg.baseUrl, token: cfg.token, session: handoffSession)
     }
 
-    /// A failed catalog fetch keeps the last successful rail available offline.
-    func halloweenCategory() async -> HomeCategory? {
-        guard let cfg = categoryConfig,
-              let data = await send(cfg, path: "/catalog/halloween", timeout: 45),
-              let category = try? JSONDecoder().decode(HomeCategory.self, from: data) else { return nil }
-        let validated = category.validated
-        return validated.items.isEmpty ? nil : validated
-    }
-
     enum CategoryError: LocalizedError {
         case unavailable, requestFailed, server(String), empty
         var errorDescription: String? {

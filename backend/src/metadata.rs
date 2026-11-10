@@ -168,7 +168,7 @@ async fn fetch(state: &MetadataState, path: &str, query: &[(String, String)]) ->
             _ => return failure(StatusCode::BAD_GATEWAY, "Invalid metadata response."),
         }
     }
-    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+    let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
         return failure(StatusCode::BAD_GATEWAY, "Invalid metadata response.");
     };
     // Fail closed if a provider ever echoes credentials, even in a 200 response.
@@ -179,6 +179,7 @@ async fn fetch(state: &MetadataState, path: &str, query: &[(String, String)]) ->
     {
         return failure(StatusCode::BAD_GATEWAY, "Invalid metadata response.");
     }
+    crate::episode_groups::normalize_metadata(path, &mut value);
     Json(value).into_response()
 }
 

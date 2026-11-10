@@ -48,10 +48,16 @@ enum EpisodeMatch {
     struct SeasonEpisodeRef {
         let number: Int
         let title: String
+        let partTitles: [String]
+        let releaseSeason: Int?
+        let releaseEpisode: Int?
 
-        init(number: Int, title: String) {
+        init(number: Int, title: String, partTitles: [String] = [], releaseSeason: Int? = nil, releaseEpisode: Int? = nil) {
             self.number = number
             self.title = title
+            self.partTitles = partTitles
+            self.releaseSeason = releaseSeason
+            self.releaseEpisode = releaseEpisode
         }
     }
 
@@ -87,10 +93,11 @@ enum EpisodeMatch {
         // Title evidence: which episode titles of the season appear in the filename?
         var matched: [Int] = []
         for ep in seasonEpisodes {
-            let sigTitle = significant(normalizeTokens(ep.title))
-            // Empty significant-token titles ("It", "A to Z") never match — a title
-            // that normalizes to nothing would "appear" in every filename.
-            if !sigTitle.isEmpty, containsContiguous(haystack: sigFile, needle: sigTitle) {
+            let titleMatches = ([ep.title] + ep.partTitles).contains { title in
+                let sigTitle = significant(normalizeTokens(title))
+                return !sigTitle.isEmpty && containsContiguous(haystack: sigFile, needle: sigTitle)
+            }
+            if titleMatches {
                 if !matched.contains(ep.number) { matched.append(ep.number) }
             }
         }
@@ -102,11 +109,29 @@ enum EpisodeMatch {
         // Numeric evidence, only when title evidence was inconclusive (0 or 2+ matches).
         let pairs = parseSeasonEpisodePairs(fileTokens.joined(separator: " "))
         if pairs.count == 1, let pair = pairs.first {
-            if pair.season == requestedSeason && pair.episode != requestedEpisode {
+            if let mapped = seasonEpisodes.first(where: { $0.releaseSeason == pair.season && $0.releaseEpisode == pair.episode }) {
+                if mapped.number != requestedEpisode { return .mismatch(actualEpisode: mapped.number) }
+            } else if !seasonEpisodes.contains(where: { $0.releaseEpisode != nil }),
+                      pair.season == requestedSeason && pair.episode != requestedEpisode {
                 return .mismatch(actualEpisode: pair.episode)
             }
         }
         return .unknown
+    }
+
+    /// A mapped episode needs evidence for every story, including third-party sources.
+    static func coversGroup(_ filenameOrTitle: String, partTitles: [String]) -> Bool {
+        if partTitles.isEmpty { return true }
+        func words(_ text: String) -> [String] {
+            normalizeTokens(text.replacingOccurrences(of: "&amp;", with: " and ").replacingOccurrences(of: "&", with: " and "))
+                .filter { !["a", "an", "the", "and", "at", "of", "to"].contains($0) }
+                .map { $0 == "blowers" ? "blower" : $0 }
+        }
+        let file = words(filenameOrTitle)
+        return partTitles.allSatisfy { title in
+            let part = words(title)
+            return !part.isEmpty && containsContiguous(haystack: file, needle: part)
+        }
     }
 
     // MARK: - normalization

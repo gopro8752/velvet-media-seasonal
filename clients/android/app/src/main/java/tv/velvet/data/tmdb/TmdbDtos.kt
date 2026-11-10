@@ -95,6 +95,7 @@ internal data class TmdbSeasonSummaryDto(
     val name: String = "",
     @SerialName("episode_count") val episodeCount: Int = 0,
     @SerialName("poster_path") val posterPath: String? = null,
+    @SerialName("velvet_episode_numbers") val episodeNumbers: List<Int> = emptyList(),
 )
 
 @Serializable
@@ -142,7 +143,13 @@ internal data class TmdbTvDetailsDto(
 )
 
 @Serializable
-internal data class TmdbSeasonDetailsDto(val episodes: List<TmdbEpisodeDto> = emptyList())
+internal data class TmdbSeasonDetailsDto(
+    val episodes: List<TmdbEpisodeDto> = emptyList(),
+    @SerialName("velvet_episode_aliases") val episodeAliases: List<TmdbEpisodeDto> = emptyList(),
+)
+
+@Serializable
+internal data class TmdbEpisodePartDto(val season: Int, val episode: Int, val name: String)
 
 @Serializable
 internal data class TmdbEpisodeDto(
@@ -153,6 +160,9 @@ internal data class TmdbEpisodeDto(
     @SerialName("still_path") val stillPath: String? = null,
     val runtime: Int? = null,
     @SerialName("air_date") val airDate: String? = null,
+    @SerialName("velvet_episode_parts") val parts: List<TmdbEpisodePartDto> = emptyList(),
+    @SerialName("velvet_release_season") val releaseSeason: Int? = null,
+    @SerialName("velvet_release_episode") val releaseEpisode: Int? = null,
 )
 
 @Serializable

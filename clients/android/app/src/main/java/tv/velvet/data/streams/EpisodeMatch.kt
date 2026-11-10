@@ -54,7 +54,11 @@ object EpisodeMatch {
      * Minimal episode descriptor so this file depends on nothing but the JDK.
      * Call sites map from the model: `episodes.map { SeasonEpisodeRef(it.number, it.title) }`.
      */
-    data class SeasonEpisodeRef(val number: Int, val title: String)
+    data class SeasonEpisodeRef(
+        val number: Int, val title: String,
+        val partTitles: List<String> = emptyList(),
+        val releaseSeason: Int? = null, val releaseEpisode: Int? = null,
+    )
 
     /**
      * Classify one stream's filename (or display title) against the requested episode.
@@ -87,10 +91,11 @@ object EpisodeMatch {
         // Title evidence: which episode titles of the season appear in the filename?
         val matched = ArrayList<Int>()
         for (ep in seasonEpisodes) {
-            val sigTitle = significant(normalizeTokens(ep.title))
-            // Empty significant-token titles ("It", "A to Z") never match — a title that
-            // normalizes to nothing would "appear" in every filename.
-            if (sigTitle.isNotEmpty() && containsContiguous(sigFile, sigTitle)) {
+            val titleMatches = (listOf(ep.title) + ep.partTitles).any { title ->
+                val significantTitle = significant(normalizeTokens(title))
+                significantTitle.isNotEmpty() && containsContiguous(sigFile, significantTitle)
+            }
+            if (titleMatches) {
                 if (ep.number !in matched) matched.add(ep.number)
             }
         }
@@ -107,11 +112,30 @@ object EpisodeMatch {
         val pairs = parseSeasonEpisodePairs(fileTokens.joinToString(" "))
         if (pairs.size == 1) {
             val (season, episode) = pairs.first()
-            if (season == requestedSeason && episode != requestedEpisode) {
+            // Packaging numbers are not TMDB's individual-story numbers. Compare
+            // the verified release identity instead of demoting a correct AB file.
+            val mapped = seasonEpisodes.firstOrNull { it.releaseSeason == season && it.releaseEpisode == episode }
+            if (mapped != null) {
+                if (mapped.number != requestedEpisode) return EpisodeTitleVerdict.Mismatch(mapped.number)
+            } else if (seasonEpisodes.none { it.releaseEpisode != null } &&
+                season == requestedSeason && episode != requestedEpisode) {
                 return EpisodeTitleVerdict.Mismatch(episode)
             }
         }
         return EpisodeTitleVerdict.Unknown
+    }
+
+    /** A mapped episode may only play a file with evidence for every story. */
+    fun coversGroup(filenameOrTitle: String, partTitles: List<String>): Boolean {
+        if (partTitles.isEmpty()) return true
+        fun words(text: String): List<String> = normalizeTokens(text.replace("&amp;", " and ").replace("&", " and "))
+            .filterNot { it in setOf("a", "an", "the", "and", "at", "of", "to") }
+            .map { if (it == "blowers") "blower" else it }
+        val file = words(filenameOrTitle)
+        return partTitles.all { title ->
+            val part = words(title)
+            part.isNotEmpty() && containsContiguous(file, part)
+        }
     }
 
     // ── normalization ────────────────────────────────────────────────────────

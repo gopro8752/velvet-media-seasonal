@@ -149,7 +149,10 @@ struct TmdbSeasonSummaryDto: Decodable {
     let episodeCount: Int?
     let posterPath: String?
 
+    let episodeNumbers: [Int]?
+
     enum CodingKeys: String, CodingKey {
+        case episodeNumbers = "velvet_episode_numbers"
         case seasonNumber = "season_number"
         case name
         case episodeCount = "episode_count"
@@ -243,6 +246,17 @@ struct TmdbTvDetailsDto: Decodable {
 
 struct TmdbSeasonDetailsDto: Decodable {
     let episodes: [TmdbEpisodeDto]?
+    let episodeAliases: [TmdbEpisodeDto]?
+    enum CodingKeys: String, CodingKey {
+        case episodes
+        case episodeAliases = "velvet_episode_aliases"
+    }
+}
+
+struct TmdbEpisodePartDto: Decodable {
+    let season: Int
+    let episode: Int
+    let name: String
 }
 
 struct TmdbEpisodeDto: Decodable {
@@ -253,8 +267,14 @@ struct TmdbEpisodeDto: Decodable {
     let stillPath: String?
     let runtime: Int?
     let airDate: String?
+    let parts: [TmdbEpisodePartDto]?
+    let releaseSeason: Int?
+    let releaseEpisode: Int?
 
     enum CodingKeys: String, CodingKey {
+        case parts = "velvet_episode_parts"
+        case releaseSeason = "velvet_release_season"
+        case releaseEpisode = "velvet_release_episode"
         case seasonNumber = "season_number"
         case episodeNumber = "episode_number"
         case name

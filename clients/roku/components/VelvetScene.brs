@@ -11,7 +11,6 @@ sub init()
     m.backendEpoch = 0
     m.sync = {profiles: [], progress: [], watched: [], mylist: []}
     m.catalogRows = []
-    m.halloween = invalid
     m.requestSequence = 0
     m.requests = {}
     m.tasks = []
@@ -108,7 +107,7 @@ sub onApiResult(event as object)
         return
     end if
     ' A late legacy collection or queue response must not follow a profile switch.
-    if kind = "halloween" or (kind = "queue" and VStr(VGet(context.context, "categoryId")) = "halloween-nostalgia")
+    if kind = "queue" and VStr(VGet(context.context, "categoryId")) = "halloween-nostalgia"
         if not VLegacyHalloweenResponseCurrent(context.context, m.profileId) then return
     end if
     if Left(kind, 4) = "hand"
@@ -134,7 +133,7 @@ sub onApiResult(event as object)
         print "[Velvet] ignoring old page request "; kind; " request="; context.generation; " current="; m.generation
         return
     end if
-    if kind = "playDetails" or kind = "resolve" or kind = "nextSeason" or kind = "liveTune" or kind = "queue" or kind = "playerEpisodes" or kind = "segments" or kind = "playerSources"
+    if kind = "playDetails" or kind = "canonicalEpisode" or kind = "resolve" or kind = "nextSeason" or kind = "liveTune" or kind = "queue" or kind = "playerEpisodes" or kind = "segments" or kind = "playerSources"
         if VNum(VGet(context.context, "playId"), -1) <> m.playGeneration
             print "[Velvet] ignoring old playback request "; kind; " request="; VNum(VGet(context.context, "playId"), -1); " current="; m.playGeneration
             return
@@ -157,12 +156,12 @@ sub onApiResult(event as object)
             return
         end if
         if kind = "sync" or kind = "push" or kind = "report" or kind = "prepare" or kind = "recoveryPlayback" or kind = "liveStop" then return
-        if kind = "halloween" or kind = "playerEpisodes" or kind = "segments" then return
+        if kind = "playerEpisodes" or kind = "segments" then return
         m.model.busy = false
         m.model.message = VStr(VGet(result, "error"), "Something went wrong. Please try again.")
-        if kind = "resolve" or kind = "playDetails" or kind = "nextSeason" or kind = "liveTune" then m.playResolving = false
+        if kind = "resolve" or kind = "canonicalEpisode" or kind = "playDetails" or kind = "nextSeason" or kind = "liveTune" then m.playResolving = false
         publishModel()
-        if m.player.visible and (kind = "resolve" or kind = "playDetails" or kind = "nextSeason" or kind = "liveTune") then playbackFailure(m.model.message)
+        if m.player.visible and (kind = "resolve" or kind = "canonicalEpisode" or kind = "playDetails" or kind = "nextSeason" or kind = "liveTune") then playbackFailure(m.model.message)
         return
     end if
     data = VGet(result, "data", {})
@@ -196,12 +195,10 @@ sub onApiResult(event as object)
         end if
     else if kind = "home"
         m.catalogRows = VArray(VGet(data, "rows"))
+        m.catalogDate = localDate()
         m.model.busy = false
         m.model.message = VStr(VGet(data, "message"))
         composeHome()
-    else if kind = "halloween"
-        m.halloween = data
-        if m.model.page = "home" then composeHome()
     else if kind = "search"
         m.model.items = VArray(VGet(data, "items"))
         m.model.busy = false
@@ -275,7 +272,7 @@ sub onApiResult(event as object)
         requestApi("guide", "/live/guide")
     else if kind = "guide"
         applyGuide(data)
-    else if kind = "playDetails" or kind = "resolve" or kind = "liveTune" or kind = "nextSeason"
+    else if kind = "playDetails" or kind = "canonicalEpisode" or kind = "resolve" or kind = "liveTune" or kind = "nextSeason"
         handlePlaybackResponse(kind, data, context.context)
     end if
 end sub
@@ -310,7 +307,6 @@ sub navigate(page as string)
             m.model.busy = true
             requestApi("home", "/catalog/home?date=" + localDate(), "GET", invalid, invalid, 40000)
         end if
-        if VHasLegacyHalloween(m.profileId) and m.halloween = invalid then requestApi("halloween", "/catalog/halloween", "GET", invalid, {profileId: m.profileId}, 90000)
         if VStr(m.pendingProfileCreate) <> m.profileId then requestApi("savedCategories", "/categories/saved?profileId=" + VEncode(m.profileId), "GET", invalid, {profileId: m.profileId})
     else if page = "live"
         m.model.busy = false
@@ -365,8 +361,10 @@ sub composeHome()
     for each row in categoryRows()
         rows.Push(row)
     end for
+    today = CreateObject("roDateTime")
+    today.ToLocalTime()
     for each row in m.catalogRows
-        rows.Push(row)
+        if VSeasonalMovieRowActive(VStr(VGet(row, "id")), today.GetMonth(), today.GetDayOfMonth()) then rows.Push(row)
     end for
     m.model.rows = preferencesHomeRows(rows)
     publishModel()
@@ -374,7 +372,7 @@ end sub
 
 function categoryRows() as object
     rows = []
-    for each category in VProfileCategories(m.categories, m.halloween, m.profileId)
+    for each category in VProfileCategories(m.categories, invalid, m.profileId)
         rows.Push({id: category.id, categoryId: category.id, title: category.title, style: "landscape", items: VArray(VGet(category, "items")), category: true})
     end for
     return rows
@@ -432,6 +430,10 @@ sub upsertSync(kind as string, record as object)
 end sub
 
 sub onSyncTimer()
+    if m.model.page = "home" and VStr(m.catalogDate) <> localDate()
+        composeHome()
+        requestApi("home", "/catalog/home?date=" + localDate(), "GET", invalid, invalid, 40000)
+    end if
     if m.failedPushes.Count() > 0
         retry = m.failedPushes.Shift()
         retryContext = VGet(retry, "context", {})
@@ -593,7 +595,6 @@ sub onKeyboardButton(event as object)
                 m.registry.Delete("token")
                 m.syncTimer.control = "stop"
                 m.catalogRows = []
-                m.halloween = invalid
                 m.sync = {profiles: [], progress: [], watched: [], mylist: []}
             end if
             m.baseUrl = base
@@ -677,7 +678,7 @@ function isBackgroundRequest(kind as string) as boolean
 end function
 
 function findCategory(id as string) as dynamic
-    for each category in VProfileCategories(m.categories, m.halloween, m.profileId)
+    for each category in VProfileCategories(m.categories, invalid, m.profileId)
         if category.id = id then return category
     end for
     return invalid

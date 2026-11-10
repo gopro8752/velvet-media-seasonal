@@ -35,6 +35,13 @@ struct Season: Hashable {
     let name: String
     let episodeCount: Int
     let posterUrl: URL?
+    var episodeNumbers: [Int] = []
+}
+
+struct EpisodePart: Hashable {
+    let season: Int
+    let episode: Int
+    let name: String
 }
 
 struct Episode: Hashable {
@@ -45,6 +52,16 @@ struct Episode: Hashable {
     var stillUrl: URL?             // 16:9 episode still
     var runtimeMinutes: Int?
     var airDate: String?           // "2024-03-01"
+    var parts: [EpisodePart] = []
+    var releaseSeason: Int? = nil
+    var releaseEpisode: Int? = nil
+
+    func covers(season: Int, episode: Int) -> Bool {
+        (self.season == season && number == episode) || parts.contains { $0.season == season && $0.episode == episode }
+    }
+    var coveredEpisodes: [EpisodePart] {
+        parts.isEmpty ? [EpisodePart(season: season, episode: number, name: title)] : parts
+    }
 }
 
 /// Full details for the details screen. `item` carries logoUrl + imdbId here.

@@ -566,7 +566,7 @@ sub handlePlayerMetadata(kind as string, data as object)
     if kind = "playerEpisodes"
         m.seasonEpisodes = VArray(VGet(data, "episodes"))
         for each episode in m.seasonEpisodes
-            if VNum(VGet(episode, "number")) = VNum(VGet(m.playItem, "episode")) then m.playItem.episodeTitle = VStr(VGet(episode, "title"))
+            if VNum(VGet(episode, "number")) = VNum(VGet(m.playItem, "episode")) then applyEpisodeMetadata(episode)
         end for
     else if kind = "segments"
         m.intro = VGet(VGet(data, "episodes", {}), VStr(VGet(m.playItem, "episode")))

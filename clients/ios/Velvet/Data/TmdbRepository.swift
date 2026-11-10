@@ -30,6 +30,7 @@ protocol TmdbRepository: Sendable {
     func rowItems(rowId: String, page: Int) async -> [MediaItem]
     func details(id: Int, type: MediaType) async throws -> MediaDetails
     func episodes(showId: Int, season: Int) async -> [Episode]
+    func episode(showId: Int, season: Int, number: Int) async -> Episode?
     func search(query: String) async -> [MediaItem]
 }
 
@@ -37,6 +38,10 @@ protocol TmdbRepository: Sendable {
 // protocol extension: every conformer gets them, and callers holding a
 // `TmdbRepository` can gate rows without knowing the concrete client.
 extension TmdbRepository {
+    func episode(showId: Int, season: Int, number: Int) async -> Episode? {
+        await episodes(showId: showId, season: season).first { $0.covers(season: season, episode: number) }
+    }
+
 
     /// The seasonal/holiday row ids, in Home order (spec §4f). These are the only
     /// ids `isSeasonalRowActive` can answer `false` for.
@@ -46,7 +51,7 @@ extension TmdbRepository {
 
     /// Whether `rowId` may be shown on `today`'s device-local date.
     /// Seasonal rows are active only inside their window — Halloween Aug 1–Oct 31
-    /// (the owner decorates early), Thanksgiving Nov 1–30, Christmas Nov 15–Dec 31,
+    /// (the owner decorates early), Thanksgiving Nov 1–30, Christmas Nov 1–Dec 31,
     /// New Year's Dec 26–Jan 5, Valentine's Feb 1–15. NOTE: any NON-seasonal row id
     /// answers `true` (there is nothing to gate), so
     /// `allRows.filter { tmdb.isSeasonalRowActive($0.id) }` is the whole Home-row

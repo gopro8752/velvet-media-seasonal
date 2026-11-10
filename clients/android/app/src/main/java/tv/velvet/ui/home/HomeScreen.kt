@@ -74,7 +74,6 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import tv.velvet.VelvetApp
 import tv.velvet.data.categories.Category
-import tv.velvet.data.categories.ownsHalloweenCategory
 import tv.velvet.data.categories.CategoryItem
 import tv.velvet.data.local.ProfileEntity
 import tv.velvet.data.model.MediaItem
@@ -109,16 +108,11 @@ fun HomeScreen(
     )
 
     val categoryProfileId by vm.categoryProfileId.collectAsStateWithLifecycle()
-    val halloweenSnapshot by vm.halloween.collectAsStateWithLifecycle()
-    val showHalloween = ownsHalloweenCategory(categoryProfileId)
-    // A retained StateFlow emission cannot flash Me's rail on another profile.
-    val halloween = halloweenSnapshot.takeIf { showHalloween }
     val generatedCategories by vm.generatedCategories.collectAsStateWithLifecycle()
     val queuePreparing by vm.queuePreparing.collectAsStateWithLifecycle()
     val queueError by vm.queueError.collectAsStateWithLifecycle()
     val categoryBusy by vm.categoryBusy.collectAsStateWithLifecycle()
     val categoryError by vm.categoryError.collectAsStateWithLifecycle()
-    val halloweenFailed by vm.halloweenFailed.collectAsStateWithLifecycle()
     var categoryDialog by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(launcherRequest?.id) {
         val request = launcherRequest ?: return@LaunchedEffect
@@ -204,9 +198,9 @@ fun HomeScreen(
             backdropUrl = hero?.backdropUrl ?: hero?.posterUrl,
             visible = !scrolledPastHero,
         )
-        if (homeUnavailable && (!showHalloween || halloweenFailed) && halloween == null && generatedCategories.isEmpty()) {
+        if (homeUnavailable && generatedCategories.isEmpty()) {
             HomeUnavailableState(
-                onRetry = { vm.retryFailedRows(); vm.refreshHalloween() },
+                onRetry = vm::retryFailedRows,
                 modifier = Modifier.align(Alignment.Center),
             )
         } else VerticalPivotLocal { LazyColumn(
@@ -245,27 +239,6 @@ fun HomeScreen(
                         onItemClick = onItemClick,
                         onItemLongClick = { vm.openActions(it, ActionsSource.MY_LIST) },
                     )
-                }
-            }
-            halloween?.takeIf { it.items.isNotEmpty() }?.let { category ->
-                item(key = "halloween_episodes") {
-                    CategoryRow(category, onPlay = { onPlay(it.playTarget()) },
-                        onPlayAll = { shuffle -> vm.playCategory(category, shuffle, onPlay) },
-                        onLongClick = { categoryActions = category to it })
-                }
-            }
-            if (showHalloween && halloween == null && !halloweenFailed) {
-                item(key = "halloween_loading") {
-                    HomeRow(title = "Monstober & Nick Halloween", style = RowStyle.LANDSCAPE,
-                        state = RowUiState.Loading, onItemClick = {})
-                }
-            }
-            if (showHalloween && halloween == null && halloweenFailed) {
-                item(key = "halloween_retry") {
-                    Button(onClick = vm::refreshHalloween, colors = velvetButtonColors(),
-                        modifier = Modifier.padding(start = 48.dp, top = 22.dp)) {
-                        Text("Retry Monstober & Nick Halloween")
-                    }
                 }
             }
             generatedCategories.forEach { category ->
@@ -322,7 +295,7 @@ fun HomeScreen(
                 actions = buildList {
                     add(MediaAction(Icons.Filled.PlayArrow, "Play") { onPlay(item.playTarget()) })
                     add(MediaAction(Icons.Outlined.Info, "Go to details") { onItemClick(item.mediaItem()) })
-                    if (category.id != halloween?.id) add(MediaAction(Icons.Filled.Delete, "Delete category") {
+                    add(MediaAction(Icons.Filled.Delete, "Delete category") {
                         categoryDeleteError = null
                         categoryToDelete = category
                     })

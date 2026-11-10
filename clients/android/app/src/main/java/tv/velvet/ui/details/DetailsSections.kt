@@ -217,7 +217,7 @@ fun EpisodeRow(
                     text = "E${episode.number} · ${episode.title}",
                     style = MaterialTheme.typography.titleMedium,
                     color = VelvetColors.TextPrimary,
-                    maxLines = 1,
+                    maxLines = if (episode.parts.size > 1) 2 else 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 val metaParts = listOfNotNull(

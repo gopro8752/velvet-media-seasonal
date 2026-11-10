@@ -250,6 +250,12 @@ function applyHandoffExactStream() as Boolean
         playbackFailure("The handoff is no longer available. Send it again from your phone.")
         return true
     end if
+    if VArray(VGet(m.playItem, "episodeParts")).Count() > 0 and not VExactEpisodeRelease(m.handoffStream, m.playItem)
+        message = "This source doesn't contain the complete episode. Choose a complete episode on your phone and send it again."
+        onHandoffFailure(message)
+        playbackFailure(message)
+        return true
+    end if
     compatible = VCompatibleStreams([m.handoffStream], m.supportsHevc, m.supportsUhd, invalid, true)
     if VArray(VGet(compatible, "streams")).Count() = 0
         message = "The stream from your phone uses video this Roku cannot play. Choose a compatible stream on your phone and send it again."

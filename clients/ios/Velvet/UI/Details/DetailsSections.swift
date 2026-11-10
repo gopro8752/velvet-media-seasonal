@@ -255,7 +255,7 @@ struct DetailsEpisodeRow: View {
                 Text("E\(episode.number) · \(episode.title)")
                     .font(VelvetFont.body(14, .semibold))
                     .foregroundStyle(VelvetColors.textPrimary)
-                    .lineLimit(1)
+                    .lineLimit(episode.parts.count > 1 ? 2 : 1)
                 if let metaLine {
                     Text(metaLine)
                         .font(VelvetFont.body(11))

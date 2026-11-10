@@ -75,17 +75,14 @@ struct CategoryQueueRequest: Encodable {
 
 @MainActor
 protocol HomeCategoryService {
-    func halloweenCategory() async -> HomeCategory?
     func generateCategory(prompt: String) async throws -> HomeCategory
 }
 
-/// This original curated row belongs to the original viewer. Its metadata may
-/// be cached globally, but other profiles must not display or launch the row.
+/// The former automatic collection is retired, including stale queue/deep-link references.
 enum PersonalHalloweenCategory {
     static let id = "halloween-nostalgia"
-    static func isVisible(profile: String) -> Bool { profile == "default" }
     static func canPlay(_ category: HomeCategory, profile: String) -> Bool {
-        category.id != id || isVisible(profile: profile)
+        !profile.isEmpty && category.id != id
     }
 }
 
@@ -96,18 +93,20 @@ enum HomeCategoryCache {
     private static let halloweenKey = "home_halloween_category_v1"
     private static func key(_ profile: String) -> String { "home_generated_categories_v1_" + profile }
 
-    static func halloween(defaults: UserDefaults = .standard) -> HomeCategory? {
-        guard let data = defaults.data(forKey: halloweenKey) else { return nil }
-        return (try? JSONDecoder().decode(HomeCategory.self, from: data))?.validated
-    }
-    static func saveHalloween(_ category: HomeCategory, defaults: UserDefaults = .standard) {
-        guard let data = try? JSONEncoder().encode(category) else { return }
-        defaults.set(data, forKey: halloweenKey)
+    static func removeRetiredLegacyCategory(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: halloweenKey)
+        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix("home_generated_categories_v1_") {
+            guard let data = value as? Data,
+                  let rows = try? JSONDecoder().decode([HomeCategory].self, from: data),
+                  rows.contains(where: { $0.id == PersonalHalloweenCategory.id }),
+                  let cleaned = try? JSONEncoder().encode(rows.filter { $0.id != PersonalHalloweenCategory.id }) else { continue }
+            defaults.set(cleaned, forKey: key)
+        }
     }
     static func categories(profile: String) -> [HomeCategory] {
         guard let data = UserDefaults.standard.data(forKey: key(profile)) else { return [] }
         return ((try? JSONDecoder().decode([HomeCategory].self, from: data)) ?? [])
-            .map(\.validated).filter { !$0.items.isEmpty }
+            .map(\.validated).filter { !$0.items.isEmpty && $0.id != PersonalHalloweenCategory.id }
     }
     static func save(_ categories: [HomeCategory], profile: String) {
         guard let data = try? JSONEncoder().encode(Array(categories.prefix(12))) else { return }

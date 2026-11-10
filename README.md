@@ -73,13 +73,14 @@ Create categories from natural language, with voice entry where the device suppo
 | “Cozy winter movies” | Movies |
 | “Star Wars movies in story order” | Movies in a requested sequence |
 
-Play a category in order or shuffle it into a continuous queue. Category playback is kept out of Continue Watching, and saved categories can be deleted. Collections belong to their profile; the original profile also includes a curated Disney/Nickelodeon Halloween episode category. AI-generated selections depend on available metadata and may need checking, particularly for chronology or narrow episode themes.
+Play a category in order or shuffle it into a continuous queue. Category playback is kept out of Continue Watching, and saved categories can be deleted. Collections belong to their profile. Seasonal movie discovery follows the calendar: Thanksgiving and Christmas rows both begin November 1. AI-generated selections depend on available metadata and may need checking, particularly for chronology or narrow episode themes.
 
 AI categories are optional. The backend can invoke the official Codex CLI after you sign in with your own eligible account. Your account's access and usage limits apply; the project includes no shared account or unlimited AI entitlement. See [AI configuration](backend/README.md#optional-integrations).
 
 ### Stay in control of playback
 
 - Choose a source, audio track, or subtitle; seek, move to the previous/next episode, and keep autoplay going.
+- Browse verified SpongeBob story bundles as one episode. Stream matching checks the bundled story titles, and autoplay advances past the entire bundle instead of replaying its second story as another full episode. Unknown groupings retain their original metadata.
 - Check candidate sources concurrently, prefer the best-quality prepared option, and retain prepared alternatives. Failed starts continue through untried sources instead of stopping after four attempts.
 - Recover original stream bytes using another provider or PAR2, look ahead from playback position, and prepare alternative playback paths. Recovery is bounded and cannot guarantee uninterrupted playback for every release. [Recovery setup →](RECOVERY.md)
 - Retry temporary connection failures without immediately abandoning a working stream, and block a troublesome release group for an individual show.

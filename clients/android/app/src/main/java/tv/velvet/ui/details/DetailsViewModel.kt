@@ -210,18 +210,20 @@ class DetailsViewModel(
     fun markEpisodeWatched(episode: Episode) {
         viewModelScope.launch {
             val profile = activeProfileId.value
-            val entity =
-                WatchedEpisodeEntity(profile, id, episode.season, episode.number, System.currentTimeMillis())
-            progressDao.markWatched(entity)
-            syncEngine.recordWatched(profile, id, entity.season, entity.episode, entity.watchedAt)
+            val now = System.currentTimeMillis()
+            val entities = episode.coveredEpisodes.map { WatchedEpisodeEntity(profile, id, it.season, it.episode, now) }
+            progressDao.markWatchedAll(entities)
+            syncEngine.recordWatchedBatch(entities)
         }
     }
 
     fun unmarkEpisodeWatched(episode: Episode) {
         viewModelScope.launch {
             val profile = activeProfileId.value
-            progressDao.unmarkWatched(profile, id, episode.season, episode.number)
-            syncEngine.recordUnwatched(profile, id, episode.season, episode.number)
+            episode.coveredEpisodes.forEach {
+                progressDao.unmarkWatched(profile, id, it.season, it.episode)
+                syncEngine.recordUnwatched(profile, id, it.season, it.episode)
+            }
         }
     }
 
@@ -242,14 +244,14 @@ class DetailsViewModel(
                 .sortedBy { it.number }
                 .forEach { season ->
                     episodesForSeason(season.number)?.forEach { ep ->
-                        entities += WatchedEpisodeEntity(profile, id, ep.season, ep.number, now)
+                        entities += ep.coveredEpisodes.map { WatchedEpisodeEntity(profile, id, it.season, it.episode, now) }
                     }
                 }
             // The long-pressed row came from a loaded list, so this is normally a
             // cache hit; if not, fall back to plain 1..N episode numbers.
             val currentSeason = episodesForSeason(episode.season)
                 ?.filter { it.number <= episode.number }
-                ?.map { WatchedEpisodeEntity(profile, id, it.season, it.number, now) }
+                ?.flatMap { it.coveredEpisodes }?.map { WatchedEpisodeEntity(profile, id, it.season, it.episode, now) }
                 ?: (1..episode.number).map { WatchedEpisodeEntity(profile, id, episode.season, it, now) }
             entities += currentSeason
             if (entities.isNotEmpty()) {
@@ -265,7 +267,7 @@ class DetailsViewModel(
             val episodes = episodesForSeason(seasonNumber) ?: return@launch
             if (episodes.isEmpty()) return@launch
             val now = System.currentTimeMillis()
-            val entities = episodes.map { WatchedEpisodeEntity(profile, id, it.season, it.number, now) }
+            val entities = episodes.flatMap { it.coveredEpisodes }.map { WatchedEpisodeEntity(profile, id, it.season, it.episode, now) }
             progressDao.markWatchedAll(entities)
             syncEngine.recordWatchedBatch(entities)
         }
@@ -382,6 +384,7 @@ class DetailsViewModel(
         val item = _state.value.details?.item
         val playTarget = _state.value.playTarget
         if (item == null || playTarget == null) return
+        if (type == MediaType.SHOW && (playTarget.season == null || playTarget.episode == null)) return
         // Same stream-key rule as the player: imdb when known, else the tmdb
         // pseudo-id the backend resolves by title (day-one titles lack imdb).
         val imdb = item.imdbId?.takeIf { it.isNotBlank() } ?: "tmdb:${item.id}"
@@ -432,6 +435,8 @@ class DetailsViewModel(
                             showStartOver = false,
                         )
                     }
+                } else if (details.seasons.any { it.episodeNumbers.isNotEmpty() }) {
+                    _state.update { it.copy(playLabel = "Play next episode", playTarget = PlayTarget(id, type), showStartOver = false) }
                 } else {
                     val (season, episode) = nextUnwatched(details, s.watchedEpisodes)
                     _state.update {
@@ -453,7 +458,7 @@ class DetailsViewModel(
     private fun nextUnwatched(details: MediaDetails, watched: Set<Pair<Int, Int>>): Pair<Int, Int> {
         val seasons = details.seasons.filter { it.number >= 1 }.sortedBy { it.number }
         for (season in seasons) {
-            for (ep in 1..season.episodeCount) {
+            for (ep in season.episodeNumbers.ifEmpty { (1..season.episodeCount).toList() }) {
                 if ((season.number to ep) !in watched) return season.number to ep
             }
         }

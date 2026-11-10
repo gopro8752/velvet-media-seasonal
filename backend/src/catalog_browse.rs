@@ -424,7 +424,7 @@ fn active(row: Row, date: NaiveDate) -> bool {
     match row.id {
         "holiday_halloween" => (801..=1031).contains(&md),
         "holiday_thanksgiving" => (1101..=1130).contains(&md),
-        "holiday_christmas" => (1115..=1231).contains(&md),
+        "holiday_christmas" => (1101..=1231).contains(&md),
         "holiday_newyear" => md >= 1226 || md <= 105,
         "holiday_valentines" => (201..=215).contains(&md),
         _ => true,
@@ -633,6 +633,9 @@ fn details_value(
     day: NaiveDate,
     stale: bool,
 ) -> BrowseResult<Value> {
+    let mut normalized = value.clone();
+    if kind == "show" { crate::episode_groups::normalize_metadata(&format!("tv/{id}"), &mut normalized); }
+    let value = &normalized;
     let item = media(value, Some(kind))
         .filter(|item| item.media_id == id)
         .ok_or_else(BrowseError::not_found)?;
@@ -668,6 +671,7 @@ fn details_value(
             if !seen.insert(n) { return None; }
             Some(json!({"number":n,"name":text(&season["name"],200).unwrap_or_else(||format!("Season {n}")),
                 "episodeCount":season["episode_count"].as_u64().unwrap_or(0).min(10000),
+                "episodeNumbers":season["velvet_episode_numbers"],
                 "posterUrl":image(season,"poster_path","w500").or_else(||item.poster_url.clone())}))
         }).take(1000).collect()
     } else {
@@ -717,28 +721,37 @@ pub async fn details(
     .await;
     respond(result)
 }
+fn catalog_episode(ep: &Value, id: u64) -> Option<Value> {
+    if ep["show_id"].as_u64().is_some_and(|show| show != id) { return None; }
+    let season = ep["season_number"].as_u64().filter(|n| *n <= 1000)?;
+    let number = ep["episode_number"].as_u64().filter(|n| (1..=10000).contains(n))?;
+    Some(json!({"season":season,"number":number,"title":text(&ep["name"],400)
+        .unwrap_or_else(||format!("Episode {number}")),"overview":text(&ep["overview"],12000),
+        "stillUrl":image(ep,"still_path","w780"),"runtimeMinutes":ep["runtime"].as_u64().filter(|n|*n>0),
+        "airDate":date_value(&ep["air_date"]).map(|d|d.to_string()),
+        "episodeParts":ep["velvet_episode_parts"],"releaseSeason":ep["velvet_release_season"],
+        "releaseEpisode":ep["velvet_release_episode"]}))
+}
 fn season_value(value: &Value, id: u64, season: u64, stale: bool) -> BrowseResult<Value> {
     if value["season_number"].as_u64() != Some(season)
         || value["show_id"].as_u64().is_some_and(|show| show != id)
     {
         return Err(BrowseError::unavailable());
     }
-    let episodes = value["episodes"]
-        .as_array()
-        .ok_or_else(BrowseError::unavailable)?;
+    let mut normalized = value.clone();
+    crate::episode_groups::normalize_season(id, season, &mut normalized);
+    let value = &normalized;
+    let episodes = value["episodes"].as_array().ok_or_else(BrowseError::unavailable)?;
     let mut seen = HashSet::new();
     let mut episodes: Vec<_> = episodes.iter().filter_map(|ep| {
-        if ep["season_number"].as_u64() != Some(season) ||
-            ep["show_id"].as_u64().is_some_and(|show| show != id) { return None; }
-        let number = ep["episode_number"].as_u64().filter(|n| (1..=10000).contains(n))?;
-        if !seen.insert(number) { return None; }
-        Some(json!({"season":season,"number":number,"title":text(&ep["name"],400)
-            .unwrap_or_else(||format!("Episode {number}")),"overview":text(&ep["overview"],12000),
-            "stillUrl":image(ep,"still_path","w780"),"runtimeMinutes":ep["runtime"].as_u64().filter(|n|*n>0),
-            "airDate":date_value(&ep["air_date"]).map(|d|d.to_string())}))
+        if ep["season_number"].as_u64() != Some(season) { return None; }
+        let episode = catalog_episode(ep, id)?;
+        if !seen.insert(episode["number"].as_u64()?) { return None; }
+        Some(episode)
     }).take(10000).collect();
     episodes.sort_by_key(|ep| ep["number"].as_u64().unwrap_or(0));
-    Ok(json!({"mediaId":id,"season":season,"episodes":episodes,"stale":stale}))
+    let aliases: Vec<_> = items(&value["velvet_episode_aliases"]).iter().filter_map(|ep| catalog_episode(ep, id)).collect();
+    Ok(json!({"mediaId":id,"season":season,"episodes":episodes,"episodeAliases":aliases,"stale":stale}))
 }
 pub async fn season(
     State(st): State<Arc<CatalogState>>,
@@ -831,6 +844,8 @@ mod tests {
         assert!(!active(row("holiday_halloween"), day("2026-07-31")));
         assert!(active(row("holiday_halloween"), day("2026-08-01")));
         assert!(!active(row("holiday_halloween"), day("2026-11-01")));
+        assert!(active(row("holiday_christmas"), day("2026-11-01")));
+        assert!(active(row("holiday_christmas"), day("2026-11-09")));
         assert!(active(row("holiday_christmas"), day("2026-11-15")));
         assert!(active(row("holiday_thanksgiving"), day("2026-11-15")));
         for date in ["2026-12-26", "2027-01-05"] {
@@ -885,6 +900,20 @@ mod tests {
             {"type":4,"release_date":"2026-10-18T00:00:00.000Z"}]}]}}),
             day("2026-10-18")
         ));
+    }
+
+    #[test]
+    fn packaged_season_contract_preserves_aliases_and_parts_for_roku() {
+        let g=crate::episode_groups::group(387,3,31).unwrap();
+        let part=&g.parts[1];
+        let v=json!({"season_number":3,"episodes":[{"id":part.id,"name":part.name,"season_number":3,"episode_number":31}]});
+        let result=season_value(&v,387,3,false).unwrap();
+        assert_eq!(result["episodes"].as_array().unwrap().len(),0);
+        let alias=&result["episodeAliases"][0];
+        assert_eq!(alias["season"],2);assert_eq!(alias["number"],22);
+        assert_eq!(alias["releaseSeason"],2);assert_eq!(alias["releaseEpisode"],13);
+        assert_eq!(alias["episodeParts"].as_array().unwrap().len(),2);
+        assert_eq!(alias["episodeParts"][1]["season"],3);
     }
 
     #[test]

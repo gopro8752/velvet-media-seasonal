@@ -44,8 +44,7 @@ class LauncherProvider : ContentProvider() {
                     LauncherTitle(it.mediaId, it.type, it.title.take(300), launcherImage(it.posterUrl), launcherImage(it.backdropUrl),
                         year = it.year?.take(40), rating = it.rating)
                 }
-                val categories = (listOfNotNull(c.categoryRepository.halloween(profile.id).first()) +
-                    c.categoryRepository.generated(profile.id).first()).take(9).map(Category::launcherCategory)
+                val categories = c.categoryRepository.generated(profile.id).first().take(9).map(Category::launcherCategory)
                 // If the profile changed while reading, export no mixed-profile snapshot.
                 if (c.settingsRepository.activeProfileId.first() != profile.id) emptySnapshot()
                 else LauncherSnapshot(profile = LauncherProfile(profile.id, profile.name.take(100), profile.color),

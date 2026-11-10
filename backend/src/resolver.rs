@@ -123,6 +123,11 @@ pub async fn search_series(
     season: u32,
     episode: u32,
 ) -> anyhow::Result<Vec<NzbResult>> {
+    if normalized_imdb(imdb_digits).as_deref() == Some("206512") {
+        if let Some(group) = crate::episode_groups::group(387, season.into(), episode.into()) {
+            return search_packaged_series(client, ix, group).await;
+        }
+    }
     let query = format!("t=tvsearch&imdbid={imdb_digits}&season={season}&ep={episode}");
     let (out, metadata) = tokio::join!(
         fetch_results(client, ix, &query),
@@ -139,6 +144,72 @@ pub async fn search_series(
         return Ok(out);
     }
     title_chain_series(client, ix, &title, year.as_deref(), Some(imdb_digits), season, episode).await
+}
+
+/// The same S01E02 marker can mean Reef Blower (a three-minute story) or
+/// Bubblestand / Ripped Pants (a complete package). Require the actual story
+/// titles, not a guessed numbering scheme, before treating a file as a package.
+async fn search_packaged_series(
+    client: &reqwest::Client,
+    ix: &Indexer,
+    group: &crate::episode_groups::EpisodeGroup,
+) -> anyhow::Result<Vec<NzbResult>> {
+    if !crate::episode_groups::verified_group(client, group).await { return Ok(Vec::new()); }
+    let first = group.first();
+    let packaged = format!("t=tvsearch&imdbid=0206512&season={}&ep={}", group.release_season, group.release_episode);
+    let original = format!("t=tvsearch&imdbid=0206512&season={}&ep={}", first.season, first.episode);
+    let mut results = if packaged == original {
+        fetch_results(client, ix, &packaged).await?
+    } else {
+        let (a,b) = tokio::join!(fetch_results(client, ix, &packaged), fetch_results(client, ix, &original));
+        let mut out = a.unwrap_or_default(); out.extend(b.unwrap_or_default()); out
+    };
+    results.retain(|r| packaged_release_matches(&r.title, group));
+    if results.is_empty() {
+        let title = sanitize_query(&first.name).replace(' ', "%20");
+        results = fetch_results(client, ix, &format!("t=search&q=spongebob%20squarepants%20{title}")).await?;
+        results.retain(|r| packaged_release_matches(&r.title, group));
+    }
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|r| seen.insert(r.title.clone()));
+    Ok(results)
+}
+
+fn story_words(text: &str) -> Vec<String> {
+    text.to_lowercase().replace("&amp;", " and ").replace('&', " and ")
+        .replace(['\'', '’'], "")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty() && !matches!(*w, "a" | "an" | "the" | "and" | "at" | "of" | "to"))
+        .map(|w| if w == "blowers" { "blower".into() } else { w.into() }).collect()
+}
+fn packaged_release_matches(release: &str, group: &crate::episode_groups::EpisodeGroup) -> bool {
+    // Accept a first SxxEyy marker even when a correctly labelled multi-episode
+    // range follows it; ordinary series retain the stricter numeric matcher.
+    let lower = release.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut marker = None;
+    for start in 0..bytes.len() {
+        if bytes[start] != b's' || start > 0 && bytes[start-1].is_ascii_alphanumeric() { continue; }
+        let mut end = start+1;
+        if episode_number(bytes,&mut end).is_none() || bytes.get(end) != Some(&b'e') { continue; }
+        end += 1;
+        if episode_number(bytes,&mut end).is_none() { continue; }
+        if bytes.get(end).is_some_and(|b| matches!(b,b'a'|b'b'|b'c')) { return false; }
+        marker = Some(start); break;
+    }
+    let Some(marker) = marker else { return false; };
+    let mut prefix = release[..marker].trim();
+    while let Some(rest) = prefix.strip_prefix('[') {
+        let Some(end)=rest.find(']') else {break;};
+        prefix=rest[end+1..].trim_start_matches(|c:char| !c.is_alphanumeric() && c!='[');
+    }
+    let identity = canonical_series_title(prefix);
+    if !matches!(identity.as_str(), "spongebobsquarepants" | "spongebobsquarepants1999") { return false; }
+    let words = story_words(&release[marker..]);
+    group.parts.iter().all(|p| {
+        let title=story_words(&p.name);
+        !title.is_empty() && words.windows(title.len()).any(|window| window == title)
+    })
 }
 
 /// Title-based movie search: t=movie by q(+year), then a generic text search.
@@ -321,6 +392,11 @@ pub async fn search_series_tmdb(
     season: u32,
     episode: u32,
 ) -> anyhow::Result<Vec<NzbResult>> {
+    if tmdb_id == "387" {
+        if let Some(group) = crate::episode_groups::group(387, season.into(), episode.into()) {
+            return search_packaged_series(client, ix, group).await;
+        }
+    }
     let Some((title, year)) = tmdb_title(client, tmdb_id, true).await else {
         return Ok(Vec::new());
     };
@@ -592,6 +668,21 @@ fn parse_newznab(xml: &str, indexer: &str) -> Vec<NzbResult> {
 #[cfg(test)]
 mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn packaged_cartoon_requires_all_stories_not_ambiguous_episode_number() {
+        let pilot=crate::episode_groups::group(387,1,2).unwrap();
+        for name in ["SpongeBob.SquarePants.S01E01E02E03.Help.Wanted.Reef.Blower.Tea.at.the.Treedome.1080p-WEB",
+            "SpongeBob.SquarePants.S01E01.Help.Wanted.and.Reef.Blowers.and.Tea.at.the.Treedome.1080p-WEB"] {
+            assert!(packaged_release_matches(name,pilot),"{name}");
+        }
+        let second=crate::episode_groups::group(387,1,5).unwrap();
+        assert!(packaged_release_matches("SpongeBob.SquarePants.S01E02.Bubblestand.Ripped.Pants.1080p-WEB",second));
+        for name in ["SpongeBob.SquarePants.S01E02.Reef.Blower.1080p-WEB", "SpongeBob.SquarePants.S01E02.1080p-WEB",
+            "SpongeBob.SquarePants.S01E02b.Ripped.Pants", "Kamp.Koral.SpongeBobs.Under.Years.S01E02.Bubblestand.Ripped.Pants"] {
+            assert!(!packaged_release_matches(name,second),"{name}");
+        }
+    }
 
     #[test]
     fn query_sanitizing() {

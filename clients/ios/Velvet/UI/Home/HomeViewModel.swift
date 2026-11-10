@@ -98,18 +98,11 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var rowStates: [String: RowState] = [:]
     /// The billboard item, lazily enriched with details() (logo, runtime, genres).
     @Published private(set) var hero: MediaItem?
-    @Published private(set) var halloweenCategory: HomeCategory?
-    @Published private(set) var halloweenLoading = false
     @Published private(set) var generatedCategories: [HomeCategory] = []
     @Published private(set) var isGeneratingCategory = false
     @Published var categoryError: String?
     private let companion: any HomeCategoryService
-    private let categoryDefaults: UserDefaults
-    private var halloweenProfileId: String
-    private var halloweenRequestId = UUID()
-    private var halloweenTask: Task<Void, Never>?
     private var categoryTask: Task<Void, Never>?
-    private var lastHalloweenFetch: Date?
 
     private let tmdb: TmdbRepository
     private let playback: PlaybackStore
@@ -154,20 +147,8 @@ final class HomeViewModel: ObservableObject {
         self.playback = playback
         self.settings = settings
         self.companion = companion
-        self.categoryDefaults = categoryDefaults
-        halloweenProfileId = playback.activeProfileId()
-        halloweenCategory = PersonalHalloweenCategory.isVisible(profile: halloweenProfileId)
-            ? HomeCategoryCache.halloween(defaults: categoryDefaults) : nil
+        HomeCategoryCache.removeRetiredLegacyCategory(defaults: categoryDefaults)
         generatedCategories = HomeCategoryCache.categories(profile: playback.activeProfileId())
-        // The publisher carries the incoming ID before SettingsStore's stored
-        // property changes. Clear the old row during the switch itself.
-        settings.$activeProfileId
-            .map { $0 ?? ProfileStore.defaultId }
-            .removeDuplicates()
-            .sink { [weak self] profile in self?.selectHalloweenProfile(profile) }
-            .store(in: &cancellables)
-        refreshHalloween()
-
         hiddenKeys = playback.discoveryHiddenKeys()
         applyRowOrder(settings.rowOrder)
         // React to row-order changes from Settings; fetch each new row independently.
@@ -191,6 +172,16 @@ final class HomeViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+            .map { Calendar.current.startOfDay(for: $0) }
+            .prepend(Calendar.current.startOfDay(for: Date()))
+            .removeDuplicates().dropFirst()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.applyRowOrder(self.settings.rowOrder)
+            }
+            .store(in: &cancellables)
+
         // Idle featured rotation: advance every 14s while there is something to
         // rotate through.
         rotationTask = Task { [weak self] in
@@ -205,7 +196,6 @@ final class HomeViewModel: ObservableObject {
     deinit {
         rotationTask?.cancel()
         heroTask?.cancel()
-        halloweenTask?.cancel()
         categoryTask?.cancel()
     }
 
@@ -276,7 +266,6 @@ final class HomeViewModel: ObservableObject {
 
     /// Re-fetch every row whose fetch failed (the "Can't reach TMDB" Retry).
     func retryFailedRows() {
-        refreshHalloween(force: true)
         for spec in tmdbRows where (rawRows[spec.id]?.isEmpty ?? false) {
             rawRows[spec.id] = nil
             if inFlightRows.insert(spec.id).inserted { fetchRow(spec.id) }
@@ -289,7 +278,6 @@ final class HomeViewModel: ObservableObject {
     /// windows against today's date.
     func onHomeAppear() {
         reloadProfileCategories()
-        refreshHalloween()
         applyRowOrder(settings.rowOrder)
         refreshHiddenKeys()
     }
@@ -299,50 +287,8 @@ final class HomeViewModel: ObservableObject {
         generatedCategories = HomeCategoryCache.categories(profile: playback.activeProfileId())
     }
 
-    private func selectHalloweenProfile(_ profile: String) {
-        guard halloweenProfileId != profile else { return }
-        halloweenProfileId = profile
-        halloweenRequestId = UUID()
-        halloweenTask?.cancel()
-        halloweenTask = nil
-        halloweenLoading = false
-        halloweenCategory = PersonalHalloweenCategory.isVisible(profile: profile)
-            ? HomeCategoryCache.halloween(defaults: categoryDefaults) : nil
-        refreshHalloween()
-    }
-
-    func halloweenCategory(for profile: String) -> HomeCategory? {
-        PersonalHalloweenCategory.isVisible(profile: profile) && halloweenProfileId == profile
-            ? halloweenCategory : nil
-    }
-
     func canPlayCategory(_ category: HomeCategory) -> Bool {
         PersonalHalloweenCategory.canPlay(category, profile: playback.activeProfileId())
-    }
-
-    func refreshHalloween(force: Bool = false) {
-        guard PersonalHalloweenCategory.isVisible(profile: halloweenProfileId), halloweenTask == nil else { return }
-        if !force, let lastHalloweenFetch, Date().timeIntervalSince(lastHalloweenFetch) < 1_800 { return }
-        let profile = halloweenProfileId
-        let requestId = UUID()
-        halloweenRequestId = requestId
-        halloweenLoading = halloweenCategory == nil
-        halloweenTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.halloweenRequestId == requestId {
-                    self.halloweenLoading = false
-                    self.halloweenTask = nil
-                }
-            }
-            if let category = await self.companion.halloweenCategory(), !Task.isCancelled,
-               self.halloweenRequestId == requestId, self.halloweenProfileId == profile,
-               self.playback.activeProfileId() == profile {
-                self.halloweenCategory = category
-                HomeCategoryCache.saveHalloween(category, defaults: self.categoryDefaults)
-                self.lastHalloweenFetch = Date()
-            }
-        }
     }
 
     func createCategory(prompt: String) {
@@ -392,7 +338,6 @@ final class HomeViewModel: ObservableObject {
     /// content keep it if the refetch comes back empty — never dead-end on a
     /// transient failure mid-browse.
     func refresh() async {
-        refreshHalloween(force: true)
         let specs = tmdbRows
         let tmdb = self.tmdb
         guard !specs.isEmpty else { return }

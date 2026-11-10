@@ -110,11 +110,16 @@ pub(crate) fn media_item(v: &Value, kind: &str) -> Option<CategoryItem> {
 pub(crate) fn episode_target(show: &Value, season: u64, episode: &Value) -> Option<CategoryItem> {
     if episode["season_number"].as_u64().is_some_and(|actual| actual != season)
         || episode["show_id"].as_u64().is_some_and(|id| Some(id) != show["id"].as_u64()) { return None; }
+    // A named story can belong to a complete broadcast package, including one
+    // anchored in another TMDB season. Keep raw validation above, then use the
+    // verified package identity everywhere a curated/AI category creates a target.
+    let episode = crate::episode_groups::normalize_episode(show["id"].as_u64()?, episode);
+    let season = episode["season_number"].as_u64().unwrap_or(season);
     let mut item = media_item(show, "show")?;
     item.season = Some(season);
     item.episode = Some(episode["episode_number"].as_u64().filter(|number| *number > 0)?);
     item.episode_title = Some(episode["name"].as_str().filter(|name| !normalized(name).is_empty())?.to_string());
-    item.still_url = image(episode, "still_path", "w780");
+    item.still_url = image(&episode, "still_path", "w780");
     Some(item)
 }
 

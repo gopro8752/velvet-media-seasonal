@@ -409,7 +409,7 @@ final class PlayerViewModel: ObservableObject {
                 let eps = (try? await episodesFor(season: s)) ?? []
                 let ep = eps.first { $0.number == e }
                 currentEpisodeMeta = ep
-                episodeLabel = Self.formatEpisodeLabel(season: s, episode: e, title: ep?.title)
+                episodeLabel = Self.formatEpisodeLabel(season: ep?.season ?? s, episode: ep?.number ?? e, title: ep?.title)
             }
             guard !tornDown else { return }
             pendingSeek = computeResume()
@@ -435,7 +435,12 @@ final class PlayerViewModel: ObservableObject {
     private func resolveEpisodeTarget(_ d: MediaDetails) async -> (Int, Int) {
         let ts = target.season
         let te = target.episode
-        if let ts, let te { return (ts, te) }
+        if let ts, let te {
+            if let canonical = await tmdb.episode(showId: target.mediaId, season: ts, number: te) {
+                return (canonical.season, canonical.number)
+            }
+            return (ts, te)
+        }
         let watched = Set(
             playback.watchedEpisodes(mediaId: target.mediaId)
                 .map { SeasonEpisodeKey(season: $0.season, episode: $0.episode) }
@@ -445,7 +450,7 @@ final class PlayerViewModel: ObservableObject {
         for sn in seasonNumbers {
             let eps = (try? await episodesFor(season: sn)) ?? []
             let hit = eps.sorted { $0.number < $1.number }
-                .first { !watched.contains(SeasonEpisodeKey(season: sn, episode: $0.number)) }
+                .first { ep in !ep.coveredEpisodes.allSatisfy { watched.contains(SeasonEpisodeKey(season: $0.season, episode: $0.episode)) } }
             if let hit { return (sn, hit.number) }
         }
         return (ts ?? 1, te ?? 1)
@@ -457,7 +462,8 @@ final class PlayerViewModel: ObservableObject {
             return nil
         }
         if target.type == .show && (row.season != curSeason || row.episode != curEpisode) {
-            return nil
+            guard let season = row.season, let episode = row.episode,
+                  currentEpisodeMeta?.covers(season: season, episode: episode) == true else { return nil }
         }
         if row.positionMs < Self.resumeMinMs { return nil }
         if row.durationMs > 0 && row.positionMs >= row.durationMs * 95 / 100 { return nil }
@@ -475,15 +481,17 @@ final class PlayerViewModel: ObservableObject {
     ) async -> ([StreamOption], [URL: EpisodeTitleVerdict]) {
         guard target.type == .show, let season, let episode else { return (streams, [:]) }
         let eps = ((try? await episodesFor(season: season)) ?? [])
-            .map { EpisodeMatch.SeasonEpisodeRef(number: $0.number, title: $0.title) }
+            .map { EpisodeMatch.SeasonEpisodeRef(number: $0.number, title: $0.title, partTitles: $0.parts.map(\.name), releaseSeason: $0.releaseSeason, releaseEpisode: $0.releaseEpisode) }
         guard !eps.isEmpty else { return (streams, [:]) }
+        let group = eps.first { $0.number == episode }
+        let complete = streams.filter { EpisodeMatch.coversGroup($0.title, partTitles: group?.partTitles ?? []) }
         var verdicts: [URL: EpisodeTitleVerdict] = [:]
-        for stream in streams {
+        for stream in complete {
             verdicts[stream.url] = EpisodeMatch.classify(
                 filenameOrTitle: stream.title, requestedSeason: season,
                 requestedEpisode: episode, seasonEpisodes: eps)
         }
-        let ranked = streams.enumerated()
+        let ranked = complete.enumerated()
             .sorted { lhs, rhs in
                 let l = verdicts[lhs.element.url]?.sortRank == 2 ? 1 : 0
                 let r = verdicts[rhs.element.url]?.sortRank == 2 ? 1 : 0
@@ -582,6 +590,10 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func play(stream: StreamOption, startPlaying: Bool? = nil, automatic: Bool = true) {
+        guard EpisodeMatch.coversGroup(stream.title, partTitles: currentEpisodeMeta?.parts.map(\.name) ?? []) else {
+            showError("This source doesn't contain the complete episode. Choose another stream.", canChoose: true)
+            return
+        }
         // Never (re)start playback on a dismissed/replaced queue item.
         guard !tornDown, !queueTransitionStarted, !isBlocked(stream) else { return }
         handoffProgressSuspended = false
@@ -1753,7 +1765,10 @@ final class PlayerViewModel: ObservableObject {
         guard let s = season, let e = episode else { return }
         guard target.type == .show else { return }
         markedWatched = true
-        playback.markWatched(mediaId: target.mediaId, season: s, episode: e)
+        let meta = episodesCache[s]?.first { $0.number == e }
+            ?? (currentEpisodeMeta?.season == s && currentEpisodeMeta?.number == e ? currentEpisodeMeta : nil)
+        let covered = meta?.coveredEpisodes ?? [EpisodePart(season: s, episode: e, name: "")]
+        playback.markWatchedAll(mediaId: target.mediaId, episodes: covered.map { (season: $0.season, episode: $0.episode) })
     }
 
     private func runtimeMs(_ ep: Episode) -> Int64 {

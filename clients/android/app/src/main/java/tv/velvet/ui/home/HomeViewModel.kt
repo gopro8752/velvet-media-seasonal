@@ -23,7 +23,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import tv.velvet.data.categories.Category
 import tv.velvet.data.categories.canAccessCategory
-import tv.velvet.data.categories.ownsHalloweenCategory
 import tv.velvet.data.local.DEFAULT_PROFILE_ID
 import tv.velvet.data.local.MyListEntity
 import tv.velvet.data.local.WatchProgressEntity
@@ -39,6 +38,7 @@ import tv.velvet.data.tmdb.*
 import tv.velvet.di.AppContainer
 import tv.velvet.ui.HomeRowOrder
 import java.util.concurrent.ConcurrentHashMap
+import java.time.LocalDate
 import kotlin.math.ceil
 
 /** Per-row loading state. Failed / loaded-empty rows collapse silently in the UI. */
@@ -93,10 +93,8 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
             .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_PROFILE_ID)
 
     // No default-profile fallback: personal categories stay hidden until the real
-    // selection is loaded. The cached Halloween collection belongs to Me only.
+    // selection is loaded.
     val categoryProfileId: StateFlow<String?> = settingsRepository.activeProfileId
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-    val halloween: StateFlow<Category?> = categories.halloween(categoryProfileId)
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -131,10 +129,10 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             val profile = settingsRepository.activeProfileId.first() ?: return@launch
             if (!canAccessCategory(profile, id)) {
-                queueError.value = "This category belongs to another profile."
+                queueError.value = "This category is no longer available."
                 return@launch
             }
-            val category = (listOfNotNull(categories.halloween(profile).first()) + categories.generated(profile).first())
+            val category = categories.generated(profile).first()
                 .firstOrNull { it.id == id }
             if (settingsRepository.activeProfileId.first() != profile) return@launch
             if (category == null) queueError.value = "This category is no longer saved. Choose another category."
@@ -150,21 +148,6 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
 
     val categoryBusy = MutableStateFlow(false)
     val categoryError = MutableStateFlow<String?>(null)
-    val halloweenFailed = MutableStateFlow(false)
-
-    fun refreshHalloween() {
-        viewModelScope.launch {
-            val profile = settingsRepository.activeProfileId.first() ?: return@launch
-            if (!ownsHalloweenCategory(profile)) return@launch
-            halloweenFailed.value = false
-            try { categories.refreshHalloween(profile) }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
-                if (settingsRepository.activeProfileId.first() == profile) halloweenFailed.value = true
-            }
-        }
-    }
-
     fun createCategory(prompt: String, onCreated: () -> Unit) {
         if (categoryBusy.value) return
         val profile = activeProfileId.value
@@ -372,6 +355,17 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
         }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     init {
+        viewModelScope.launch {
+            var date = LocalDate.now()
+            while (true) {
+                delay(60_000)
+                val today = LocalDate.now()
+                if (today != date) {
+                    date = today
+                    lastRowOrder?.let(::applyRowOrder)
+                }
+            }
+        }
         // Persist public display metadata from normal browsing for the signed launcher.
         // The launcher provider never starts a TMDB request or fetches playback sources.
         viewModelScope.launch {
@@ -382,9 +376,8 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
             }
         }
         viewModelScope.launch {
-            categoryProfileId.collect { profile ->
+            categoryProfileId.collect {
                 dismissQueuePreparation()
-                if (ownsHalloweenCategory(profile)) refreshHalloween()
             }
         }
         // React to row-order changes from Settings; fetch each (new) row independently.

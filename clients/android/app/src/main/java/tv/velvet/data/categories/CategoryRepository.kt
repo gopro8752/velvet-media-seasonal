@@ -2,11 +2,10 @@ package tv.velvet.data.categories
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -18,7 +17,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import tv.velvet.data.local.DEFAULT_PROFILE_ID
 import tv.velvet.data.model.MediaItem
 import tv.velvet.data.model.MediaType
 import tv.velvet.data.model.PlayTarget
@@ -69,15 +67,23 @@ internal fun Category.queueBody(shuffle: Boolean) = QueueBody(title,
 
 internal const val HALLOWEEN_CATEGORY_ID = "halloween-nostalgia"
 
-/** The original hand-curated collection belongs to the original (Me) profile. */
-internal fun ownsHalloweenCategory(profile: String?): Boolean = profile == DEFAULT_PROFILE_ID
+/** The former hard-coded personal collection is retired; saved AI categories stay profile-owned. */
 internal fun canAccessCategory(profile: String?, categoryId: String): Boolean =
-    !profile.isNullOrBlank() && (categoryId != HALLOWEEN_CATEGORY_ID || ownsHalloweenCategory(profile))
+    !profile.isNullOrBlank() && categoryId != HALLOWEEN_CATEGORY_ID
 
-internal fun Flow<Category?>.halloweenForProfile(profiles: Flow<String?>): Flow<Category?> =
-    combine(profiles, this) { profile, category -> category.takeIf { ownsHalloweenCategory(profile) } }
+internal fun retireLegacyCategoryPreferences(preferences: MutablePreferences, json: Json) {
+    preferences.remove(stringPreferencesKey("halloween"))
+    for ((key, value) in preferences.asMap().toMap()) {
+        if (!key.name.startsWith("generated_")) continue
+        val raw = value as? String ?: continue
+        val rows = runCatching { json.decodeFromString(ListSerializer(Category.serializer()), raw) }.getOrNull() ?: continue
+        if (rows.any { it.id == HALLOWEEN_CATEGORY_ID }) {
+            preferences[stringPreferencesKey(key.name)] = json.encodeToString(ListSerializer(Category.serializer()),
+                rows.filterNot { it.id == HALLOWEEN_CATEGORY_ID })
+        }
+    }
+}
 
-/** Saved categories are private to a viewer; the original Halloween cache is retained for its owner. */
 class CategoryRepository(
     private val context: Context,
     private val settings: SettingsRepository,
@@ -86,12 +92,10 @@ class CategoryRepository(
 ) {
     private val client = client.newBuilder().callTimeout(150, TimeUnit.SECONDS)
         .readTimeout(150, TimeUnit.SECONDS).build()
-    private val halloweenKey = stringPreferencesKey("halloween")
-    private val cachedHalloween = context.categoryStore.data.map { preferences ->
-        preferences[halloweenKey]?.let { runCatching { json.decodeFromString(Category.serializer(), it).validated() }.getOrNull() }
+    /** Idempotent startup migration: remove only the retired built-in identity. */
+    suspend fun removeRetiredLegacyCategory() {
+        context.categoryStore.edit { retireLegacyCategoryPreferences(it, json) }
     }
-    fun halloween(profiles: Flow<String?>): Flow<Category?> = cachedHalloween.halloweenForProfile(profiles)
-    fun halloween(profile: String?): Flow<Category?> = cachedHalloween.map { it.takeIf { ownsHalloweenCategory(profile) } }
 
     private fun profileKey(profile: String) = stringPreferencesKey("generated_" +
         MessageDigest.getInstance("SHA-256").digest(profile.toByteArray())
@@ -100,18 +104,8 @@ class CategoryRepository(
         decodeList(preferences[profileKey(profile)])
     }
     private fun decodeList(raw: String?) = raw?.let {
-        runCatching { json.decodeFromString(ListSerializer(Category.serializer()), it).map(Category::validated) }.getOrNull()
+        runCatching { json.decodeFromString(ListSerializer(Category.serializer()), it).map(Category::validated).filterNot { row -> row.id == HALLOWEEN_CATEGORY_ID } }.getOrNull()
     } ?: emptyList()
-
-    suspend fun refreshHalloween(profile: String) {
-        require(ownsHalloweenCategory(profile)) { "This category belongs to another profile." }
-        val category = request("/catalog/halloween").validated()
-        // Keep a useful cached rail through upstream failures/empty catalog responses.
-        require(category.items.isNotEmpty()) { "Halloween episodes aren't available yet." }
-        context.categoryStore.edit {
-            it[halloweenKey] = json.encodeToString(Category.serializer(), category)
-        }
-    }
 
     suspend fun generate(profile: String, prompt: String): Category {
         require(prompt.trim().length in 3..500) { "Describe a category in 3–500 characters." }
@@ -134,7 +128,7 @@ class CategoryRepository(
     }
 
     suspend fun expandQueue(profile: String, category: Category, shuffle: Boolean): Category {
-        require(canAccessCategory(profile, category.id)) { "This category belongs to another profile." }
+        require(canAccessCategory(profile, category.id)) { "This category is no longer available." }
         return request("/categories/queue", queue = category.queueBody(shuffle)).validated()
     }
 

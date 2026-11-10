@@ -36,6 +36,7 @@ final class TmdbClient: TmdbRepository {
     private let movieDetailsCache = TtlLruCache<MediaDetails>(maxEntries: 192, ttl: nil)
     private let showDetailsCache = TtlLruCache<MediaDetails>(maxEntries: 64, ttl: TmdbClient.showDetailsTtl)
     private let episodesCache = TtlLruCache<[Episode]>(maxEntries: 128, ttl: TmdbClient.rowTtl)
+    private let episodeAliases = TtlLruCache<[Episode]>(maxEntries: 128, ttl: TmdbClient.rowTtl)
 
     // TMDB's official genre lists (stable ids). "Science Fiction" shortened for meta lines.
     private static let movieGenres: [Int: String] = [
@@ -130,28 +131,30 @@ final class TmdbClient: TmdbRepository {
     func episodes(showId: Int, season: Int) async -> [Episode] {
         let cacheKey = "\(showId)/\(season)"
         if let cached = await episodesCache.get(cacheKey) { return cached }
-        let episodes: [Episode]
         do {
             let body = try await httpGet("tv/\(showId)/season/\(season)", [])
             let dto = try JSONDecoder().decode(TmdbSeasonDetailsDto.self, from: body)
-            episodes = (dto.episodes ?? [])
-                .filter { ($0.episodeNumber ?? 0) > 0 }
-                .map { ep in
-                    Episode(
-                        season: ep.seasonNumber ?? 0,
-                        number: ep.episodeNumber ?? 0,
-                        title: nonBlank(ep.name) ?? "Episode \(ep.episodeNumber ?? 0)",
-                        overview: nonBlank(ep.overview),
-                        stillUrl: imageUrl("w400", ep.stillPath),
-                        runtimeMinutes: ep.runtime.flatMap { $0 > 0 ? $0 : nil },
-                        airDate: nonBlank(ep.airDate)
-                    )
-                }
-        } catch {
-            return [] // not cached — [] must mean "no episodes", never "the network blipped"
-        }
-        if !episodes.isEmpty { await episodesCache.put(cacheKey, episodes) }
-        return episodes
+            let episodes = (dto.episodes ?? []).filter { ($0.episodeNumber ?? 0) > 0 }.map(mapEpisode)
+            await episodeAliases.put(cacheKey, (dto.episodeAliases ?? []).map(mapEpisode))
+            if !episodes.isEmpty { await episodesCache.put(cacheKey, episodes) }
+            return episodes
+        } catch { return [] }
+    }
+
+    func episode(showId: Int, season: Int, number: Int) async -> Episode? {
+        let episodes = await episodes(showId: showId, season: season)
+        let aliases = await episodeAliases.get("\(showId)/\(season)") ?? []
+        return (episodes + aliases).first { $0.covers(season: season, episode: number) }
+    }
+
+    private func mapEpisode(_ ep: TmdbEpisodeDto) -> Episode {
+        Episode(season: ep.seasonNumber ?? 0, number: ep.episodeNumber ?? 0,
+                title: nonBlank(ep.name) ?? "Episode \(ep.episodeNumber ?? 0)",
+                overview: nonBlank(ep.overview), stillUrl: imageUrl("w400", ep.stillPath),
+                runtimeMinutes: ep.runtime.flatMap { $0 > 0 ? $0 : nil }, airDate: nonBlank(ep.airDate),
+                parts: (ep.parts ?? []).filter { $0.season >= 0 && $0.episode > 0 }
+                    .map { EpisodePart(season: $0.season, episode: $0.episode, name: $0.name) },
+                releaseSeason: ep.releaseSeason, releaseEpisode: ep.releaseEpisode)
     }
 
     func search(query: String) async -> [MediaItem] {
@@ -542,7 +545,8 @@ final class TmdbClient: TmdbRepository {
                         number: number,
                         name: nonBlank(season.name) ?? "Season \(number)",
                         episodeCount: season.episodeCount ?? 0,
-                        posterUrl: imageUrl("w500", season.posterPath ?? dto.posterPath)
+                        posterUrl: imageUrl("w500", season.posterPath ?? dto.posterPath),
+                        episodeNumbers: season.episodeNumbers ?? []
                     )
                 },
             similar: Array(

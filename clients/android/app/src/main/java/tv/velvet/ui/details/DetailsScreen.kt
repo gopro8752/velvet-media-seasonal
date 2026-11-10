@@ -241,9 +241,9 @@ private fun EpisodeActionsSheet(
     onPlay: (PlayTarget) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val watched = (episode.season to episode.number) in state.watchedEpisodes
+    val watched = episode.coveredEpisodes.all { (it.season to it.episode) in state.watchedEpisodes }
     val isInProgress = state.progress
-        ?.let { it.season == episode.season && it.episode == episode.number } == true
+        ?.let { it.season != null && it.episode != null && episode.covers(it.season, it.episode) } == true
     val actions = buildList {
         add(MediaAction(Icons.Default.PlayArrow, "Play this episode") {
             onDismiss()
@@ -387,10 +387,10 @@ private fun DetailsContent(
                 }
             } else {
                 items(state.episodes, key = { "ep_${it.season}_${it.number}" }) { episode ->
-                    val watched = (episode.season to episode.number) in state.watchedEpisodes
+                    val watched = episode.coveredEpisodes.all { (it.season to it.episode) in state.watchedEpisodes }
                     val progressFraction = state.progress
                         ?.takeIf {
-                            it.season == episode.season && it.episode == episode.number &&
+                            it.season != null && it.episode != null && episode.covers(it.season, it.episode) &&
                                 it.durationMs > 0 && it.positionMs > 0
                         }
                         ?.let { (it.positionMs.toFloat() / it.durationMs.toFloat()).coerceIn(0f, 1f) }

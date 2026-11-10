@@ -111,7 +111,10 @@ function VExactEpisodeRelease(stream as object, item as object) as boolean
     coordinates = CreateObject("roRegex", "s([0-9]+)[ ._-]*e([0-9]+)", "i").Match(filename)
     if coordinates.Count() = 0 then coordinates = CreateObject("roRegex", "([0-9]+)x([0-9]+)", "i").Match(filename)
     if coordinates.Count() < 3 then return false
-    if Val(coordinates[1]) <> VNum(VGet(item, "season")) or Val(coordinates[2]) <> VNum(VGet(item, "episode")) then return false
+    grouped = VArray(VGet(item, "episodeParts")).Count() > 0
+    if not grouped
+        if Val(coordinates[1]) <> VNum(VGet(item, "season")) or Val(coordinates[2]) <> VNum(VGet(item, "episode")) then return false
+    end if
     marker = Instr(1, LCase(filename), LCase(coordinates[0]))
     prefix = Left(filename, marker - 1)
     prefix = CreateObject("roRegex", "^\[[^\]]+\][ ._-]*", "i").ReplaceAll(prefix, "")
@@ -120,6 +123,7 @@ function VExactEpisodeRelease(stream as object, item as object) as boolean
     if expected = "" then return false
     matchesTitle = actual = expected or actual = expected + VStr(VGet(item, "year"))
     if not matchesTitle then return false
+    if grouped then return VCompleteEpisodeRelease(filename, item)
     tail = Mid(filename, marker + Len(coordinates[0]))
     multi = CreateObject("roRegex", "^[ ._+&/-]*(e[0-9]|s[0-9]+[ ._-]*e[0-9]|[0-9]+x[0-9]|[+&/-][0-9]{1,3}([^0-9]|$))", "i").IsMatch(tail)
     return not multi
@@ -158,4 +162,43 @@ end function
 function VReachedPlaybackEnd(position as dynamic, duration as dynamic) as boolean
     ' A decoder's premature EOF/error must not mark an episode watched or skip it.
     return duration > 0 and position > 0 and position >= duration - 5
+end function
+
+' Resolve stale individual-story history/links without adding a second list row.
+function VCanonicalEpisode(seasonData as object, season as integer, number as integer) as dynamic
+    for each key in ["episodes", "episodeAliases"]
+        for each episode in VArray(VGet(seasonData, key))
+            if VNum(VGet(episode, "season")) = season and VNum(VGet(episode, "number")) = number then return episode
+            for each part in VArray(VGet(episode, "episodeParts"))
+                if VNum(VGet(part, "season")) = season and VNum(VGet(part, "episode")) = number then return episode
+            end for
+        end for
+    end for
+    return invalid
+end function
+
+' The backend only groups verified packaging entries. Require every story title
+' here too: a solitary B-story release must not skip the unplayed A story.
+function VStoryWords(value as string) as string
+    normalized = LCase(value).Replace("&amp;", " and ").Replace("&", " and ").Replace("'", "").Replace("’", "")
+    normalized = CreateObject("roRegex", "[^a-z0-9]+", "i").ReplaceAll(normalized, " ")
+    result = " "
+    for each word in normalized.Tokenize(" ")
+        if word <> "a" and word <> "an" and word <> "the" and word <> "and" and word <> "at" and word <> "of" and word <> "to"
+            if word = "blowers" then word = "blower"
+            result += word + " "
+        end if
+    end for
+    return result
+end function
+
+function VCompleteEpisodeRelease(filename as string, item as object) as boolean
+    parts = VArray(VGet(item, "episodeParts"))
+    if parts.Count() = 0 then return false
+    words = VStoryWords(filename)
+    for each part in parts
+        title = VStoryWords(VStr(VGet(part, "name")))
+        if title = " " or Instr(1, words, title) = 0 then return false
+    end for
+    return true
 end function

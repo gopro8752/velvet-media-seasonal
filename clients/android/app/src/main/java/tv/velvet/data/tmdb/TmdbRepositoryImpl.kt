@@ -105,14 +105,14 @@ class TmdbRepositoryImpl(
 
     /**
      * Seasonal rows and their active windows (device-local date, spec §4f). Iteration order
-     * is the display order used in [allRows]: in the two overlaps (Nov 15–30 and Dec 26–31)
+     * is the display order used in [allRows]: in the two overlaps (Nov 1–30 and Dec 26–31)
      * the nearer holiday leads.
      */
     private val seasonalWindows: Map<String, SeasonalWindow> = linkedMapOf(
         // Aug 1, not late September: spooky season starts in August in this house.
         "holiday_halloween" to SeasonalWindow(MonthDay.of(8, 1), MonthDay.of(10, 31)),
         "holiday_thanksgiving" to SeasonalWindow(MonthDay.of(11, 1), MonthDay.of(11, 30)),
-        "holiday_christmas" to SeasonalWindow(MonthDay.of(11, 15), MonthDay.of(12, 31)),
+        "holiday_christmas" to SeasonalWindow(MonthDay.of(11, 1), MonthDay.of(12, 31)),
         "holiday_newyear" to SeasonalWindow(MonthDay.of(12, 26), MonthDay.of(1, 5)),
         "holiday_valentines" to SeasonalWindow(MonthDay.of(2, 1), MonthDay.of(2, 15)),
     )
@@ -480,6 +480,7 @@ class TmdbRepositoryImpl(
                         number = season.seasonNumber,
                         name = season.name.ifBlank { "Season ${season.seasonNumber}" },
                         episodeCount = season.episodeCount,
+                        episodeNumbers = season.episodeNumbers,
                         posterUrl = (season.posterPath ?: dto.posterPath)?.let { "$IMG/w500$it" },
                     )
                 },
@@ -489,28 +490,38 @@ class TmdbRepositoryImpl(
         )
     }
 
+    // Aliases are lookup-only: a story packaged with an earlier season must not
+    // become a second card or a second autoplay item in this season.
+    private val episodeAliases = java.util.concurrent.ConcurrentHashMap<String, List<Episode>>()
+
     override suspend fun episodes(showId: Int, season: Int): List<Episode> {
         val cacheKey = "$showId/$season"
         episodesCache.get(cacheKey)?.let { return it }
-        // Failures propagate (see TmdbRepository contract): an empty result must mean
-        // "this season really has no episodes", never "the network blipped".
         val body = httpGet("tv/$showId/season/$season", emptyMap())
-        val episodes = json.decodeFromString(TmdbSeasonDetailsDto.serializer(), body).episodes
-            .filter { it.episodeNumber > 0 }
-            .map { ep ->
-                Episode(
-                    season = ep.seasonNumber,
-                    number = ep.episodeNumber,
-                    title = ep.name?.takeIf(String::isNotBlank) ?: "Episode ${ep.episodeNumber}",
-                    overview = ep.overview?.takeIf(String::isNotBlank),
-                    stillUrl = ep.stillPath?.let { "$IMG/w400$it" },
-                    runtimeMinutes = ep.runtime?.takeIf { it > 0 },
-                    airDate = ep.airDate?.takeIf(String::isNotBlank),
-                )
-            }
+        val dto = json.decodeFromString(TmdbSeasonDetailsDto.serializer(), body)
+        val episodes = dto.episodes.filter { it.episodeNumber > 0 }.map(::mapEpisode)
+        episodeAliases[cacheKey] = dto.episodeAliases.filter { it.episodeNumber > 0 }.map(::mapEpisode)
         if (episodes.isNotEmpty()) episodesCache.put(cacheKey, episodes)
         return episodes
     }
+
+    override suspend fun episode(showId: Int, season: Int, number: Int): Episode? =
+        (episodes(showId, season) + episodeAliases["$showId/$season"].orEmpty())
+            .firstOrNull { it.covers(season, number) }
+
+    private fun mapEpisode(ep: TmdbEpisodeDto) = Episode(
+        season = ep.seasonNumber,
+        number = ep.episodeNumber,
+        title = ep.name?.takeIf(String::isNotBlank) ?: "Episode ${ep.episodeNumber}",
+        overview = ep.overview?.takeIf(String::isNotBlank),
+        stillUrl = ep.stillPath?.let { "$IMG/w400$it" },
+        runtimeMinutes = ep.runtime?.takeIf { it > 0 },
+        airDate = ep.airDate?.takeIf(String::isNotBlank),
+        parts = ep.parts.filter { it.season >= 0 && it.episode > 0 }
+            .map { tv.velvet.data.model.EpisodePart(it.season, it.episode, it.name) },
+        releaseSeason = ep.releaseSeason,
+        releaseEpisode = ep.releaseEpisode,
+    )
 
     override suspend fun search(query: String): List<MediaItem> {
         val trimmed = query.trim()

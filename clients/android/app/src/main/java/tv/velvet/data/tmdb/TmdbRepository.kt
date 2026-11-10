@@ -44,7 +44,7 @@ interface TmdbRepository {
      * True when [rowId] is a seasonal row whose calendar window contains [today]
      * (device-local date). False for any non-seasonal id, so it doubles as
      * "is this row currently allowed on Home / enabled-by-default in Settings".
-     * Windows: Halloween Aug 1–Oct 31, Thanksgiving Nov 1–30, Christmas Nov 15–Dec 31,
+     * Windows: Halloween Aug 1–Oct 31, Thanksgiving Nov 1–30, Christmas Nov 1–Dec 31,
      * New Year's Dec 26–Jan 5, Valentine's Feb 1–15.
      */
     fun isSeasonalRowActive(rowId: String, today: java.time.LocalDate = java.time.LocalDate.now()): Boolean
@@ -63,6 +63,10 @@ interface TmdbRepository {
      * "request failed" with "season has no episodes" (autoplay would skip seasons).
      */
     suspend fun episodes(showId: Int, season: Int): List<Episode>
+
+    /** Resolve an old single-story target to its verified full-episode identity. */
+    suspend fun episode(showId: Int, season: Int, number: Int): Episode? =
+        episodes(showId, season).firstOrNull { it.covers(season, number) }
 
     suspend fun search(query: String): List<MediaItem>
 

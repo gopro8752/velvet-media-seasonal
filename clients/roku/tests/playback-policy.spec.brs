@@ -1,5 +1,18 @@
 sub main()
     m.failures = 0
+    joined = {season: 1, number: 4, title: "Bubblestand / Ripped Pants", releaseSeason: 1, releaseEpisode: 2,
+        episodeParts: [{season: 1, episode: 4, name: "Bubblestand"}, {season: 1, episode: 5, name: "Ripped Pants"}]}
+    canonical = VCanonicalEpisode({episodes: [joined]}, 1, 5)
+    expect(canonical <> invalid and canonical.number = 4, "B story resolves to the single complete episode")
+    cross = {season: 2, number: 22, title: "Shanghaied / Gary Takes a Bath", episodeParts: [{season: 2, episode: 22, name: "Shanghaied"}, {season: 3, episode: 31, name: "Gary Takes a Bath"}]}
+    canonical = VCanonicalEpisode({episodes: [], episodeAliases: [cross]}, 3, 31)
+    expect(canonical <> invalid and canonical.season = 2 and canonical.number = 22, "cross-season B story resolves through lookup-only aliases")
+    item = {type: "show", title: "SpongeBob SquarePants", season: 1, episode: 4, releaseSeason: 1, releaseEpisode: 2, episodeParts: joined.episodeParts}
+    expect(VExactEpisodeRelease({behaviorHints: {filename: "SpongeBob.SquarePants.S01E02.Bubblestand.Ripped.Pants.mkv"}}, item), "full paired packaging release is not rejected for differing TMDB numbering")
+    expect(not VExactEpisodeRelease({behaviorHints: {filename: "SpongeBob.SquarePants.S01E05.Ripped.Pants.mkv"}}, item), "solo B story cannot stand in for the whole group")
+    expect(not VExactEpisodeRelease({behaviorHints: {filename: "Other.Show.S01E02.Bubblestand.Ripped.Pants.mkv"}}, item), "combined titles cannot bypass the series identity guard")
+    expect(VCompleteEpisodeRelease("SpongeBob.Mermaid.Man.and.Barnacle.Boy.III.Squirrel.Jokes", {episodeParts: [{name: "Mermaid Man & Barnacle Boy III"}, {name: "Squirrel Jokes"}]}), "ampersand and word variants match the backend's verified story titles")
+    expect(VCompleteEpisodeRelease("Help.Wanted.Reef.Blowers.Tea.at.the.Treedome", {episodeParts: [{name: "Help Wanted"}, {name: "Reef Blower"}, {name: "Tea at the Treedome"}]}), "release spelling Reef Blowers still proves the complete three-story pilot")
     streams = [
         {id: "avc", title: "Example.1080p.H264.AAC", url: "https://backend/stream/1"},
         {id: "hevc", title: "Example.1080p.HEVC.DDP5.1", url: "https://backend/stream/2"},

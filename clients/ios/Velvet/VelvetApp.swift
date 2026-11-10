@@ -16,6 +16,7 @@ final class AppContainer: ObservableObject {
     let liveSports: LiveSportsClient
 
     init(modelContainer: ModelContainer) {
+        HomeCategoryCache.removeRetiredLegacyCategory()
         let settings = SettingsStore()
         self.settings = settings
         self.tmdb = TmdbClient(settings: settings)

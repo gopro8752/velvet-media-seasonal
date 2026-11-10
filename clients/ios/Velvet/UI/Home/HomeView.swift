@@ -124,7 +124,7 @@ private struct HomeContent: View {
     /// rails are empty. Friendly retry state instead of a silent blank page.
     private var showUnavailable: Bool {
         viewModel.allRowsFailed && progressRows.isEmpty && myListRows.isEmpty
-            && viewModel.halloweenCategory == nil && viewModel.generatedCategories.isEmpty
+            && viewModel.generatedCategories.isEmpty
     }
 
     private var wordmarkOpacity: Double {
@@ -264,16 +264,6 @@ private struct HomeContent: View {
                 myListMenu(for: item)
             }
         }
-        if let category = viewModel.halloweenCategory(for: activeProfileId) {
-            categoryRow(category)
-        } else if PersonalHalloweenCategory.isVisible(profile: activeProfileId), viewModel.halloweenLoading {
-            HStack(spacing: 10) {
-                ProgressView()
-                Text("Loading Monstober & Nick Halloween…")
-                    .font(VelvetFont.body(13))
-            }
-            .padding(16)
-        }
         ForEach(viewModel.generatedCategories) { category in
             categoryRow(category, removable: true)
         }
@@ -358,7 +348,7 @@ private struct HomeContent: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("What are you in the mood for?")
                     .font(VelvetFont.display(23, .semibold))
-                Text("Try “Cartoon Network shows,” “Disney Halloween episodes,” or “Star Wars movies in story order.” Years are optional. Type or use your keyboard’s microphone.")
+                Text("Try “Cartoon Network shows,” “Disney holiday episodes,” or “Star Wars movies in story order.” Years are optional. Type or use your keyboard’s microphone.")
                     .font(VelvetFont.body(15))
                     .foregroundStyle(VelvetColors.textSecondary)
                 TextField("Describe your category", text: $categoryPrompt, axis: .vertical)

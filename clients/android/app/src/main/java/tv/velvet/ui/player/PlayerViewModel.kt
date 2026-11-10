@@ -621,7 +621,7 @@ class PlayerViewModel(
                     val ep = runCatching { episodesFor(s) }.getOrDefault(emptyList())
                         .firstOrNull { it.number == e }
                     currentEpisodeMeta = ep
-                    _state.update { it.copy(episodeLabel = formatEpisodeLabel(s, e, ep?.title)) }
+                    _state.update { it.copy(episodeLabel = formatEpisodeLabel(ep?.season ?: s, ep?.number ?: e, ep?.title)) }
                 }
                 // Cross-device resume: read the progress row only AFTER this session's
                 // launch pull has settled (bounded wait), so a position written on the
@@ -650,13 +650,16 @@ class PlayerViewModel(
     private suspend fun resolveEpisodeTarget(d: MediaDetails): Pair<Int, Int> {
         val ts = target.season
         val te = target.episode
-        if (ts != null && te != null) return ts to te
+        if (ts != null && te != null) {
+            val canonical = tmdb.episode(target.mediaId, ts, te)
+            return canonical?.let { it.season to it.number } ?: (ts to te)
+        }
         val watched = progressDaoWatchedSet()
         val seasonNumbers = d.seasons.map { it.number }.filter { it > 0 }.sorted()
             .let { all -> if (ts != null) all.filter { it == ts } else all }
         for (sn in seasonNumbers) {
             val eps = runCatching { episodesFor(sn) }.getOrDefault(emptyList())
-            val hit = eps.sortedBy { it.number }.firstOrNull { (sn to it.number) !in watched }
+            val hit = eps.sortedBy { it.number }.firstOrNull { ep -> !ep.coveredEpisodes.all { (it.season to it.episode) in watched } }
             if (hit != null) return sn to hit.number
         }
         return (ts ?: 1) to (te ?: 1)
@@ -672,7 +675,9 @@ class PlayerViewModel(
         val row = runCatching { progressDao.progressFor(activeProfileId, target.mediaId, target.type.key) }
             .getOrNull() ?: return null
         if (target.type == MediaType.SHOW &&
-            (row.season != curSeason || row.episode != curEpisode)
+            (row.season == null || row.episode == null ||
+                currentEpisodeMeta?.covers(row.season, row.episode) != true &&
+                (row.season != curSeason || row.episode != curEpisode))
         ) return null
         if (row.positionMs < RESUME_MIN_MS) return null
         if (row.durationMs > 0 && row.positionMs >= row.durationMs * 95 / 100) return null
@@ -736,7 +741,7 @@ class PlayerViewModel(
         val verdicts: Map<String, EpisodeTitleVerdict> =
             if (target.type == MediaType.SHOW && season != null && episode != null) {
                 val eps = runCatching { episodesFor(season) }.getOrDefault(emptyList())
-                    .map { EpisodeMatch.SeasonEpisodeRef(it.number, it.title) }
+                    .map { EpisodeMatch.SeasonEpisodeRef(it.number, it.title, it.parts.map { part -> part.name }, it.releaseSeason, it.releaseEpisode) }
                 if (eps.isEmpty()) emptyMap()
                 else streams.associate { s ->
                     s.url to EpisodeMatch.classify(s.title, season, episode, eps)
@@ -746,9 +751,11 @@ class PlayerViewModel(
 
         // Quality sort first, then a STABLE verdict re-rank: CONFIRMED first, UNKNOWN keeps
         // today's ordering, MISMATCH sinks last. sortedBy is stable.
+        val group = if (season != null && episode != null) episodesCache[season]?.firstOrNull { it.number == episode } else null
+        val complete = streams.filter { EpisodeMatch.coversGroup(it.title, group?.parts?.map { part -> part.name }.orEmpty()) }
         val sorted: List<StreamOption> =
-            runCatching { streamRepo.sortStreams(streams.filterNot(::isBlocked), settings.preferredQuality) }
-                .getOrDefault(streams.filterNot(::isBlocked))
+            runCatching { streamRepo.sortStreams(complete.filterNot(::isBlocked), settings.preferredQuality) }
+                .getOrDefault(complete.filterNot(::isBlocked))
         val readiness = container.streamRecoveryApi.startupReadiness(sorted, refreshReadiness, waitForReadyMs = 3_500)
         val healthy = startupCandidates(sorted, readiness, ::rankOf)
         // Keep explicit group continuity without delaying first playback on probe batches.
@@ -794,6 +801,11 @@ class PlayerViewModel(
     }
 
     private fun prepareStream(stream: StreamOption, reason: SourceSwitchReason) {
+        if (!EpisodeMatch.coversGroup(stream.title, currentEpisodeMeta?.parts?.map { it.name }.orEmpty())) {
+            if (handoffLease != null && !handoffFinished) abortHandoff("This source doesn't contain the complete episode. Choose a complete episode on your phone and send it again.")
+            else showError("This source doesn't contain the complete episode. Choose another stream.", canChoose = true)
+            return
+        }
         if (handoffAccepted && isBlocked(stream)) return
         if (handoffAborted || (handoffFinished && !handoffAccepted)) return
         fallbackSelectionJob?.cancel()
@@ -1570,9 +1582,13 @@ class PlayerViewModel(
         if (target.type != MediaType.SHOW) return
         markedWatched = true
         runCatching {
-            val entity = WatchedEpisodeEntity(activeProfileId, target.mediaId, s, e, System.currentTimeMillis())
-            progressDao.markWatched(entity)
-            syncEngine.recordWatched(entity.profileId, entity.mediaId, entity.season, entity.episode, entity.watchedAt)
+            val meta = episodesCache[s]?.firstOrNull { it.number == e }
+                ?: currentEpisodeMeta?.takeIf { it.season == s && it.number == e }
+            val covered = meta?.coveredEpisodes ?: listOf(tv.velvet.data.model.EpisodePart(s, e, ""))
+            val now = System.currentTimeMillis()
+            val entities = covered.map { WatchedEpisodeEntity(activeProfileId, target.mediaId, it.season, it.episode, now) }
+            progressDao.markWatchedAll(entities)
+            syncEngine.recordWatchedBatch(entities)
         }
     }
 

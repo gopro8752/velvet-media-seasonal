@@ -124,6 +124,19 @@ sub handlePlaybackResponse(kind as string, data as object, context as dynamic)
             same = target.type = "movie" or (VGet(progress, "season") = VGet(target, "season") and VGet(progress, "episode") = VGet(target, "episode"))
             if same and not VCompleted(VNum(VGet(progress, "positionMs")), VNum(VGet(progress, "durationMs"))) then m.lastPosition = VNum(VGet(progress, "positionMs")) / 1000#
         end if
+        grouped = false
+        for each seasonMeta in VArray(VGet(m.playDetails, "seasons"))
+            if VArray(VGet(seasonMeta, "episodeNumbers")).Count() > 0 then grouped = true
+        end for
+        if target.type = "show" and grouped
+            requestApi("canonicalEpisode", "/catalog/show/" + VStr(target.mediaId) + "/seasons/" + VStr(target.season), "GET", invalid, {playId: m.playGeneration})
+            return
+        end if
+        if applyHandoffExactStream() then return
+        resolvePlayback()
+    else if kind = "canonicalEpisode"
+        canonical = VCanonicalEpisode(data, VNum(VGet(m.playItem, "season")), VNum(VGet(m.playItem, "episode")))
+        if canonical <> invalid then applyEpisodeMetadata(canonical)
         if applyHandoffExactStream() then return
         resolvePlayback()
     else if kind = "resolve"
@@ -201,13 +214,20 @@ sub handlePlaybackResponse(kind as string, data as object, context as dynamic)
             requestApi("nextSeason", "/catalog/show/" + VStr(m.playItem.mediaId) + "/seasons/" + VStr(nextSeason), "GET", invalid, {playId: m.playGeneration, after: after, direction: direction})
             return
         end if
-        m.playItem.season = selectedEpisode.season
-        m.playItem.episode = selectedEpisode.number
-        m.playItem.episodeTitle = selectedEpisode.title
+        applyEpisodeMetadata(selectedEpisode)
         m.lastPosition = 0
         m.lastDuration = 0
         resolvePlayback()
     end if
+end sub
+
+sub applyEpisodeMetadata(episode as object)
+    m.playItem.season = episode.season
+    m.playItem.episode = episode.number
+    m.playItem.episodeTitle = episode.title
+    m.playItem.episodeParts = VArray(VGet(episode, "episodeParts"))
+    m.playItem.releaseSeason = VGet(episode, "releaseSeason")
+    m.playItem.releaseEpisode = VGet(episode, "releaseEpisode")
 end sub
 
 sub resolvePlayback()
@@ -588,9 +608,14 @@ sub savePlaybackProgress()
     upsertSync("progress", record)
     body = {progress: [record]}
     if record.deleted and VGet(record, "type") = "show"
-        watched = {profileId: m.playProfileId, mediaId: record.mediaId, season: record.season, episode: record.episode, watchedAt: record.updatedAt, updatedAt: record.updatedAt, deleted: false}
-        upsertSync("watched", watched)
-        body.watched = [watched]
+        covered = VArray(VGet(record, "episodeParts"))
+        if covered.Count() = 0 then covered = [{season: record.season, episode: record.episode}]
+        body.watched = []
+        for each part in covered
+            watched = {profileId: m.playProfileId, mediaId: record.mediaId, season: part.season, episode: part.episode, watchedAt: record.updatedAt, updatedAt: record.updatedAt, deleted: false}
+            upsertSync("watched", watched)
+            body.watched.Push(watched)
+        end for
     end if
     requestApi("push", "/push", "POST", body)
 end sub

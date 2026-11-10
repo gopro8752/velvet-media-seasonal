@@ -224,11 +224,12 @@ private struct DetailsScreenView: View {
     }
 
     private func episodeRow(_ episode: Episode, details: MediaDetails) -> some View {
-        let watched = watchedSet.contains(
-            DetailsViewModel.EpisodeKey(season: episode.season, episode: episode.number))
+        let watched = episode.coveredEpisodes.allSatisfy {
+            watchedSet.contains(DetailsViewModel.EpisodeKey(season: $0.season, episode: $0.episode))
+        }
         let isInProgress: Bool = {
             guard let p = progress, let s = p.season, let e = p.episode else { return false }
-            return s == episode.season && e == episode.number
+            return episode.covers(season: s, episode: e)
         }()
         let target = PlayTarget(
             mediaId: details.item.id, type: .show,
@@ -285,7 +286,7 @@ private struct DetailsScreenView: View {
     /// Green partial-progress underline fraction for the in-progress episode.
     private func progressFraction(for episode: Episode) -> Double? {
         guard let p = progress,
-              p.season == episode.season, p.episode == episode.number,
+              let season = p.season, let number = p.episode, episode.covers(season: season, episode: number),
               p.durationMs > 0, p.positionMs > 0 else { return nil }
         return min(max(Double(p.positionMs) / Double(p.durationMs), 0), 1)
     }

@@ -37,7 +37,7 @@ struct SeasonalRow: Identifiable, Hashable, Sendable {
     }
 
     /// Home order: earliest holiday first, so overlapping windows read
-    /// chronologically (Nov 15–30 shows Thanksgiving above Christmas).
+    /// chronologically (Nov 1–30 shows Thanksgiving above Christmas).
     ///
     /// Halloween opens Aug 1, not late September: the owner decorates early —
     /// spooky season starts in August in this house, and the row should be on
@@ -48,7 +48,7 @@ struct SeasonalRow: Identifiable, Hashable, Sendable {
         SeasonalRow(id: "holiday_thanksgiving", title: "Thanksgiving Picks",
                     keywordId: 4543, startMonth: 11, startDay: 1, endMonth: 11, endDay: 30),
         SeasonalRow(id: "holiday_christmas", title: "Christmas Movies",
-                    keywordId: 207317, startMonth: 11, startDay: 15, endMonth: 12, endDay: 31),
+                    keywordId: 207317, startMonth: 11, startDay: 1, endMonth: 12, endDay: 31),
         SeasonalRow(id: "holiday_newyear", title: "New Year's Eve",
                     keywordId: 252123, startMonth: 12, startDay: 26, endMonth: 1, endDay: 5),
         SeasonalRow(id: "holiday_valentines", title: "Valentine's Day",

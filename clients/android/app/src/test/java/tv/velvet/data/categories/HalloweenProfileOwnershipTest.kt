@@ -1,51 +1,44 @@
 package tv.velvet.data.categories
 
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
+import androidx.datastore.preferences.core.mutablePreferencesOf
+import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
-import tv.velvet.data.local.DEFAULT_PROFILE_ID
 
 class HalloweenProfileOwnershipTest {
-    private val halloween = Category(HALLOWEEN_CATEGORY_ID, "Monstober & Nick Halloween",
-        listOf(CategoryItem(5371, "show", "iCarly", season = 1, episode = 7)))
-
-    @Test fun legacyCollectionIsVisibleOnlyToOriginalProfile() = runBlocking {
-        val cache = MutableStateFlow<Category?>(halloween)
-        val profile = MutableStateFlow<String?>(DEFAULT_PROFILE_ID)
-        val visible = cache.halloweenForProfile(profile)
-        assertEquals(halloween, visible.first())
-        profile.value = "craig-profile-id"
-        assertNull(visible.first())
-        profile.value = null
-        assertNull(visible.first())
-        profile.value = DEFAULT_PROFILE_ID
-        assertEquals(halloween, visible.first())
-        // Switching does not delete or rewrite the original cached collection.
-        assertEquals(halloween, cache.value)
+    @Test fun retiredCollectionCannotBeLaunchedByAnyProfile() {
+        for (profile in listOf("default", "craig", "", null)) {
+            assertFalse(canAccessCategory(profile, HALLOWEEN_CATEGORY_ID))
+        }
+        assertTrue(canAccessCategory("default", "ai-halloween"))
+        assertTrue(canAccessCategory("craig", "ai-halloween"))
+        assertFalse(canAccessCategory(null, "ai-halloween"))
     }
 
-    @Test fun lateCacheRefreshDoesNotExposeCollectionAfterProfileSwitch() = runBlocking {
-        val cache = MutableStateFlow<Category?>(null)
-        val profile = MutableStateFlow<String?>(DEFAULT_PROFILE_ID)
-        val visible = cache.halloweenForProfile(profile)
-        assertNull(visible.first())
-        profile.value = "craig-profile-id"
-        cache.value = halloween
-        assertNull(visible.first())
-        assertFalse(ownsHalloweenCategory(profile.value)) // no loading or retry rail either
-        assertFalse(ownsHalloweenCategory(null))
-        profile.value = DEFAULT_PROFILE_ID
-        assertTrue(ownsHalloweenCategory(profile.value))
-        assertEquals(halloween, visible.first())
-    }
-
-    @Test fun categoryDeepLinksAndQueuesRequireOwnerButOrdinaryCategoriesStillWork() {
-        assertTrue(canAccessCategory(DEFAULT_PROFILE_ID, HALLOWEEN_CATEGORY_ID))
-        assertFalse(canAccessCategory("craig-profile-id", HALLOWEEN_CATEGORY_ID))
-        assertFalse(canAccessCategory(null, HALLOWEEN_CATEGORY_ID))
-        assertFalse(canAccessCategory("", "generated-id"))
-        assertTrue(canAccessCategory("craig-profile-id", "generated-id"))
+    @Test fun startupMigrationDeletesOnlyRetiredIdentityAcrossProfileCaches() {
+        val legacy = Category(HALLOWEEN_CATEGORY_ID, "Monstober & Nick Halloween", emptyList())
+        val personal = Category("ai-halloween", "Monstober & Nick Halloween", emptyList())
+        val other = Category("ai-movies", "My movies", emptyList())
+        val first = stringPreferencesKey("generated_first-profile")
+        val second = stringPreferencesKey("generated_second-profile")
+        val legacyKey = stringPreferencesKey("halloween")
+        val unrelated = stringPreferencesKey("unrelated")
+        val serializer = ListSerializer(Category.serializer())
+        val preferences = mutablePreferencesOf(
+            legacyKey to Json.encodeToString(Category.serializer(), legacy),
+            first to Json.encodeToString(serializer, listOf(legacy, personal)),
+            second to Json.encodeToString(serializer, listOf(other)),
+            unrelated to "keep",
+        )
+        retireLegacyCategoryPreferences(preferences, Json)
+        assertNull(preferences[legacyKey])
+        assertEquals(listOf(personal), Json.decodeFromString(serializer, preferences[first]!!))
+        assertEquals(listOf(other), Json.decodeFromString(serializer, preferences[second]!!))
+        assertEquals("keep", preferences[unrelated])
+        val once = preferences.toPreferences()
+        retireLegacyCategoryPreferences(preferences, Json)
+        assertEquals(once, preferences.toPreferences())
     }
 }

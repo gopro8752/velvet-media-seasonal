@@ -99,10 +99,13 @@ struct ShowCatalog { item: CategoryItem, episodes: Vec<EpisodeEntry> }
 
 async fn metadata(st: &CatalogState, path: &str, query: &[(&str, String)]) -> Result<Value, &'static str> {
     let _permit = st.queue.requests.acquire().await.map_err(|_| "Episode catalog is unavailable.")?;
-    catalog::tmdb(&st.http, path, query).await.map_err(|_| "Some episode metadata could not load. Try again; your queue has not started.")
+    let mut value = catalog::tmdb(&st.http, path, query).await.map_err(|_| "Some episode metadata could not load. Try again; your queue has not started.")?;
+    crate::episode_groups::normalize_metadata(path, &mut value);
+    Ok(value)
 }
 
 async fn load_show(st: Arc<CatalogState>, seeds: Vec<Seed>, today: Date, budget: Arc<AtomicUsize>) -> Result<ShowCatalog, &'static str> {
+    let seeds: Vec<_> = seeds.into_iter().map(canonical_seed).collect();
     let seed = &seeds[0];
     let kind = if seed.r#type == "show" { "tv" } else { "movie" };
     let details = metadata(&st, &format!("{kind}/{}", seed.media_id), &[("append_to_response", "external_ids".into())]).await?;
@@ -164,7 +167,18 @@ async fn load_show(st: Arc<CatalogState>, seeds: Vec<Seed>, today: Date, budget:
     Ok(ShowCatalog { item, episodes })
 }
 
+fn canonical_seed(mut seed: Seed) -> Seed {
+    if seed.r#type == "show" {
+        if let Some((season, episode)) = seed.season.zip(seed.episode) {
+            let (season, episode) = crate::episode_groups::canonical_coordinates(seed.media_id, season, episode);
+            seed.season = Some(season); seed.episode = Some(episode);
+        }
+    }
+    seed
+}
+
 fn select_targets(seed: &Seed, catalog: &ShowCatalog) -> Result<Vec<CategoryItem>, &'static str> {
+    let seed = canonical_seed(seed.clone());
     if seed.r#type == "movie" { return Ok(vec![catalog.item.clone()]); }
     let targets: Vec<_> = catalog.episodes.iter().filter(|e| {
         e.aired && match (seed.season, seed.episode) {
@@ -287,6 +301,27 @@ mod tests {
         }).collect();
         ShowCatalog { item: base, episodes }
     }
+    #[test]
+    fn repeated_explicit_stories_share_one_queue_target() {
+        let mut catalog=fixture();catalog.item.media_id=387;
+        catalog.episodes.truncate(1);
+        catalog.episodes[0].item.media_id=387;
+        catalog.episodes[0].item.season=Some(1);catalog.episodes[0].item.episode=Some(1);
+        let seeds:Vec<_>=(1..=3).map(|episode| Seed{media_id:387,r#type:"show".into(),season:Some(1),episode:Some(episode)}).collect();
+        let catalogs=HashMap::from([(("show".into(),387),catalog)]);
+        let queue=merge_targets(&seeds,&catalogs).unwrap();
+        assert_eq!(queue.len(),1);assert_eq!(queue[0].episode,Some(1));
+    }
+
+    #[test]
+    fn explicit_stories_canonicalize_before_queue_lookup() {
+        let seed = Seed { media_id:387, r#type:"show".into(), season:Some(1), episode:Some(3) };
+        assert_eq!(canonical_seed(seed).episode,Some(1));
+        let seed = Seed { media_id:387, r#type:"show".into(), season:Some(3), episode:Some(31) };
+        let canonical = canonical_seed(seed);
+        assert_eq!((canonical.season,canonical.episode),(Some(2),Some(22)));
+    }
+
     #[test]
     fn halloween_explicit_episode_never_expands_to_ordinary_show() {
         let selected = select_targets(&seed(Some(1), Some(7)), &fixture()).unwrap();

@@ -131,6 +131,7 @@ final class DetailsViewModel: ObservableObject {
         // progress/watched snapshot the button uses — the detached task then
         // carries only value types (plus the Sendable repo) off-actor.
         let target = currentPlayState(details: details).target
+        if target.type == .show && (target.season == nil || target.episode == nil) { return }
         let repo = streams
         Task.detached(priority: .utility) {
             _ = await repo.streams(imdbId: imdbId, type: target.type,
@@ -177,11 +178,11 @@ final class DetailsViewModel: ObservableObject {
     // MARK: - context-menu actions (writes land in SwiftData → @Query re-emits)
 
     func markEpisodeWatched(_ episode: Episode) {
-        playback.markWatched(mediaId: item.id, season: episode.season, episode: episode.number)
+        playback.markWatchedAll(mediaId: item.id, episodes: episode.coveredEpisodes.map { (season: $0.season, episode: $0.episode) })
     }
 
     func unmarkEpisodeWatched(_ episode: Episode) {
-        playback.unmarkWatched(mediaId: item.id, season: episode.season, episode: episode.number)
+        episode.coveredEpisodes.forEach { playback.unmarkWatched(mediaId: item.id, season: $0.season, episode: $0.episode) }
     }
 
     /// "Mark all up to here watched": every episode of every real season BEFORE
@@ -198,7 +199,7 @@ final class DetailsViewModel: ObservableObject {
             var entries: [(season: Int, episode: Int)] = []
             for season in earlierSeasons {
                 if let eps = await self.episodesForSeason(season.number) {
-                    entries += eps.map { (season: $0.season, episode: $0.number) }
+                    entries += eps.flatMap(\.coveredEpisodes).map { (season: $0.season, episode: $0.episode) }
                 }
             }
             // The long-pressed row came from a loaded list, so this is normally
@@ -206,7 +207,7 @@ final class DetailsViewModel: ObservableObject {
             if let currentSeason = await self.episodesForSeason(episode.season) {
                 entries += currentSeason
                     .filter { $0.number <= episode.number }
-                    .map { (season: $0.season, episode: $0.number) }
+                    .flatMap(\.coveredEpisodes).map { (season: $0.season, episode: $0.episode) }
             } else if episode.number >= 1 {
                 entries += (1...episode.number).map { (season: episode.season, episode: $0) }
             }
@@ -222,7 +223,7 @@ final class DetailsViewModel: ObservableObject {
             guard let eps = await self.episodesForSeason(seasonNumber), !eps.isEmpty else { return }
             self.playback.markWatchedAll(
                 mediaId: self.item.id,
-                episodes: eps.map { (season: $0.season, episode: $0.number) }
+                episodes: eps.flatMap(\.coveredEpisodes).map { (season: $0.season, episode: $0.episode) }
             )
         }
     }
@@ -308,6 +309,9 @@ final class DetailsViewModel: ObservableObject {
                     showStartOver: false
                 )
             }
+            if details.seasons.contains(where: { !$0.episodeNumbers.isEmpty }) {
+                return PlayState(label: "Play next episode", target: PlayTarget(mediaId: id, type: .show, season: nil, episode: nil), showStartOver: false)
+            }
             let next = nextUnwatched(details: details, watched: watched)
             return PlayState(
                 label: "Play S\(next.season) E\(next.episode)",
@@ -325,7 +329,7 @@ final class DetailsViewModel: ObservableObject {
     ) -> (season: Int, episode: Int) {
         let seasons = details.seasons.filter { $0.number >= 1 }.sorted { $0.number < $1.number }
         for season in seasons where season.episodeCount > 0 {
-            for ep in 1...season.episodeCount
+            for ep in season.episodeNumbers.isEmpty ? Array(1...season.episodeCount) : season.episodeNumbers
             where !watched.contains(EpisodeKey(season: season.number, episode: ep)) {
                 return (season.number, ep)
             }

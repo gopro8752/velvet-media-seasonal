@@ -34,7 +34,10 @@ data class Season(
     val name: String,
     val episodeCount: Int,
     val posterUrl: String?,
+    val episodeNumbers: List<Int> = emptyList(),
 )
+
+data class EpisodePart(val season: Int, val episode: Int, val name: String)
 
 data class Episode(
     val season: Int,
@@ -44,7 +47,16 @@ data class Episode(
     val stillUrl: String? = null,      // 16:9 episode still
     val runtimeMinutes: Int? = null,
     val airDate: String? = null,       // "2024-03-01"
-)
+    /** Verified stories packaged in this file. Ordinary episodes have no mapping. */
+    val parts: List<EpisodePart> = emptyList(),
+    val releaseSeason: Int? = null,
+    val releaseEpisode: Int? = null,
+) {
+    fun covers(season: Int, episode: Int): Boolean =
+        (this.season == season && number == episode) || parts.any { it.season == season && it.episode == episode }
+    val coveredEpisodes: List<EpisodePart>
+        get() = parts.ifEmpty { listOf(EpisodePart(season, number, title)) }
+}
 
 /** Full details for the details screen. [item] carries logoUrl + imdbId here. */
 data class MediaDetails(

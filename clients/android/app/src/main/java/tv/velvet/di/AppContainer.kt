@@ -96,6 +96,7 @@ class AppContainer(context: Context) {
         // First-run hook: guarantee a {id:"default", name:"Me"} profile + an active
         // selection before any screen reads them. Idempotent on later launches.
         appScope.launch {
+            runCatching { categoryRepository.removeRetiredLegacyCategory() }
             runCatching { settingsRepository.clearLegacySleepMarker() }
             runCatching { profilesRepository.ensureBootstrap() }
         }
