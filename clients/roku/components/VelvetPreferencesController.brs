@@ -55,7 +55,7 @@ end function
 function preferencesHomeRows(rows as object) as object
     m.preferenceAvailableRows = VCopy(rows)
     layout = preferenceLayout()
-    return VOrderedHomeRows(rows, layout.order, layout.hidden)
+    return VServerOrderedHomeRows(rows, layout.order, layout.hidden)
 end function
 
 function preferencesStreams(streams as object) as object
@@ -233,7 +233,7 @@ function preferenceKnownRows() as object
     for each row in m.preferenceAvailableRows
         rows.Push(row)
     end for
-    return VOrderedHomeRows(rows, preferenceLayout().order, [])
+    return VServerOrderedHomeRows(rows, preferenceLayout().order, [])
 end function
 
 sub preferenceRowsMenu()
@@ -243,6 +243,10 @@ sub preferenceRowsMenu()
         hidden = VPreferenceHas(layout.hidden, VStr(row.id))
         subtitle = "Visible · select to hide or move"
         if hidden then subtitle = "Hidden · select to show or move"
+        if Left(VStr(row.id), 9) = "seasonal_"
+            subtitle = "Visible · order managed by server · select to hide"
+            if hidden then subtitle = "Hidden · order managed by server · select to show"
+        end if
         entries.Push({label: VStr(row.title), subtitle: subtitle, command: "editRow", rowId: row.id})
     end for
     entries.Push({label: "Reset home layout", subtitle: "Show every row in its default position", command: "resetRows"})
@@ -263,8 +267,10 @@ sub preferenceRowMenu()
     label = "Hide from Home"
     if VPreferenceHas(layout.hidden, m.preferenceRow) then label = "Show on Home"
     entries = [{label: label, command: "toggleRow"}]
-    if index > 0 then entries.Push({label: "Move up", command: "moveRow", direction: -1})
-    if index >= 0 and index < rows.Count() - 1 then entries.Push({label: "Move down", command: "moveRow", direction: 1})
+    if Left(m.preferenceRow, 9) <> "seasonal_"
+        if index > 0 then entries.Push({label: "Move up", command: "moveRow", direction: -1})
+        if index >= 0 and index < rows.Count() - 1 then entries.Push({label: "Move down", command: "moveRow", direction: 1})
+    end if
     entries.Push({label: "Back to home rows", command: "rows"})
     preferencePresent("row", title, entries)
 end sub
@@ -380,6 +386,7 @@ function handlePreferencesChoice(index as integer) as boolean
     else if command = "rows"
         preferenceRowsMenu()
     else if command = "toggleRow" or command = "moveRow"
+        if command = "moveRow" and Left(m.preferenceRow, 9) = "seasonal_" then preferenceRowMenu() : return true
         layout = preferenceLayout()
         if command = "toggleRow" then layout.hidden = VPreferenceToggle(layout.hidden, m.preferenceRow)
         if command = "moveRow" then layout.order = VMoveHomeRow(preferenceKnownRows(), layout.order, m.preferenceRow, VNum(action.direction))

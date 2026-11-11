@@ -2,17 +2,18 @@ package tv.velvet.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import tv.velvet.data.model.RowSpec
 import tv.velvet.data.model.StreamSourceConfig
 import tv.velvet.data.settings.SettingsRepository
 import tv.velvet.data.settings.VelvetSettings
-// Star import: the seasonal-row API (isSeasonalRowActive / seasonalRowIds) lives in
-// this package alongside TmdbRepository itself.
-import tv.velvet.data.tmdb.*
+
 import tv.velvet.di.AppContainer
 import tv.velvet.ui.HomeRowOrder
 
@@ -22,6 +23,7 @@ data class HomeRowEntry(
     val enabled: Boolean,
     val canMoveUp: Boolean,
     val canMoveDown: Boolean,
+    val serverManaged: Boolean = false,
 )
 
 data class SettingsUiState(
@@ -48,19 +50,23 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
 
     private val tmdb = container.tmdbRepository
 
-    /** Every row Velvet knows how to render, in default order. */
-    private val allRows: List<RowSpec> = tmdb.allRows
-
-    /** Ids of the seasonal/holiday rows — enabled by default only inside their window. */
-    private val seasonalRowIds: Set<String> =
-        runCatching { tmdb.seasonalRowIds().toSet() }.getOrDefault(emptySet())
+    private var seasonalRows: List<RowSpec> = emptyList()
+    private val allRows: List<RowSpec> get() = seasonalRows + tmdb.allRows
 
     private val _state = MutableStateFlow(SettingsUiState(rowEntries = buildRowEntries(emptyList())))
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
-            settingsRepository.settings.collect { s -> apply(s, loaded = true) }
+            combine(settingsRepository.settings, settingsRepository.activeProfileId) { s, profile -> s to profile }
+                .collectLatest { (s, _) ->
+                    seasonalRows = emptyList()
+                    apply(s, loaded = true)
+                    seasonalRows = try { tmdb.seasonalRows() }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { emptyList() }
+                    apply(_state.value.settings, loaded = true)
+                }
         }
     }
 
@@ -103,6 +109,7 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
 
     /** Move an enabled row up (-1) or down (+1) within the effective order. Persists immediately. */
     fun moveRow(rowId: String, delta: Int) {
+        if (rowId.startsWith("seasonal_")) return
         if (!_state.value.loaded) return
         val order = effectiveEnabledOrder()
         val from = order.indexOf(rowId)
@@ -119,6 +126,7 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
      * Re-enabled rows are appended to the end of the enabled list.
      */
     fun toggleRow(rowId: String) {
+        if (rowId.startsWith("seasonal_")) return
         if (!_state.value.loaded) return
         val order = effectiveEnabledOrder().toMutableList()
         if (rowId in order) {
@@ -137,39 +145,12 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
         persistRowOrder(emptyList())
     }
 
-    private fun effectiveEnabledOrder(): List<String> = enabledOrder(_state.value.settings.rowOrder)
+    private fun effectiveEnabledOrder(): List<String> =
+        enabledOrder(_state.value.settings.rowOrder).filterNot { it.startsWith("seasonal_") }
 
-    /**
-     * The enabled row ids as Settings displays (and persists) them.
-     *
-     * Empty stored order = "no preference": the default enabled set, which is every row
-     * except seasonal ones outside their window — an out-of-season holiday row shouldn't
-     * sit in the enabled list as noise (§4f; it stays listed below, so he can still pin it).
-     *
-     * A non-empty stored order gets renamed ids migrated and ids introduced SINCE it was
-     * written appended (§4g), exactly like Home does — otherwise the first row edge he
-     * ever made would freeze the v1.2.0 holiday rows out of Settings permanently. A
-     * seasonal newcomer only joins the ENABLED list inside its window; out of season it
-     * lands in the disabled list below, where he can still pin it by hand (and a pin he
-     * makes there survives, because it is then part of the stored order).
-     */
-    private fun enabledOrder(rowOrder: List<String>): List<String> {
-        val knownIds = allRows.map { it.id }.toSet()
-        val stored = HomeRowOrder.migrate(rowOrder).filter { it in knownIds }
-        if (stored.isEmpty()) return defaultEnabledIds()
-        val present = stored.toHashSet()
-        val appended = allRows.map { it.id }.filter { id ->
-            id !in present && HomeRowOrder.isAddedAfterV1(id) && isEnabledByDefault(id)
-        }
-        return stored + appended
-    }
-
-    private fun defaultEnabledIds(): List<String> =
-        allRows.map { it.id }.filter(::isEnabledByDefault)
-
-    /** Seasonal rows are only enabled-by-default inside their calendar window (§4f). */
-    private fun isEnabledByDefault(rowId: String): Boolean =
-        rowId !in seasonalRowIds || tmdb.isSeasonalRowActive(rowId)
+    /** Same server-owned seasonal order as Home; only ordinary ids are persisted. */
+    private fun enabledOrder(rowOrder: List<String>): List<String> =
+        HomeRowOrder.migrateAndAppend(rowOrder, allRows.map { it.id })
 
     private fun persistRowOrder(order: List<String>) {
         apply(_state.value.settings.copy(rowOrder = order))
@@ -182,11 +163,13 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
         val enabledIds = enabledSpecs.map { it.id }.toSet()
         val disabledSpecs = allRows.filter { it.id !in enabledIds }
         return enabledSpecs.mapIndexed { i, spec ->
+            val managed = spec.id.startsWith("seasonal_")
             HomeRowEntry(
                 spec = spec,
                 enabled = true,
-                canMoveUp = i > 0,
-                canMoveDown = i < enabledSpecs.lastIndex,
+                canMoveUp = !managed && i > seasonalRows.size,
+                canMoveDown = !managed && i < enabledSpecs.lastIndex,
+                serverManaged = managed,
             )
         } + disabledSpecs.map { spec ->
             HomeRowEntry(spec = spec, enabled = false, canMoveUp = false, canMoveDown = false)
@@ -260,8 +243,8 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
      * Optimistic update; the DataStore flow re-emits the same values right after.
      * The stored row order is migrated on READ (trending_movies -> popular_now), so a
      * hand-tuned order survives the row rename and re-persists on the next edit. Only the
-     * RENAME is applied to the mirrored value — [enabledOrder] appends newer ids on top of
-     * it, so a stored "no preference" (empty) order is never fabricated into a pinned one.
+     * RENAME is applied to the mirrored value — [enabledOrder] resolves server seasonal
+     * rows for display only, never fabricating a persisted preference.
      */
     private fun apply(settings: VelvetSettings, loaded: Boolean = _state.value.loaded) {
         val migrated = settings.copy(rowOrder = HomeRowOrder.migrate(settings.rowOrder))

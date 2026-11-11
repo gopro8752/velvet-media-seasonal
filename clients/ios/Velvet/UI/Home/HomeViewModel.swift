@@ -106,10 +106,10 @@ final class HomeViewModel: ObservableObject {
 
     private let tmdb: TmdbRepository
     private let playback: PlaybackStore
-    /// Kept so Home can re-resolve the row order on appear — the seasonal
-    /// windows are evaluated against the DEVICE-LOCAL date, which can roll over
-    /// while the app sits in the background.
     private let settings: SettingsStore
+    private var seasonalSpecs: [RowSpec] = []
+    private var seasonalRefresh: SeasonalForegroundRefresh!
+    private var seasonalGeneration: UUID { seasonalRefresh.generation }
 
     /// Raw fetched items per row id, BEFORE cross-row dedupe / history
     /// filtering. nil = not fetched yet; [] = failed or genuinely empty (the
@@ -147,6 +147,10 @@ final class HomeViewModel: ObservableObject {
         self.playback = playback
         self.settings = settings
         self.companion = companion
+        seasonalRefresh = SeasonalForegroundRefresh(
+            invalidate: { [weak self] in self?.clearSeasonalRows() },
+            action: { [weak self] generation in await self?.loadSeasonalRows(generation: generation) }
+        )
         HomeCategoryCache.removeRetiredLegacyCategory(defaults: categoryDefaults)
         generatedCategories = HomeCategoryCache.categories(profile: playback.activeProfileId())
         hiddenKeys = playback.discoveryHiddenKeys()
@@ -172,13 +176,21 @@ final class HomeViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        Timer.publish(every: 60, on: .main, in: .common).autoconnect()
-            .map { Calendar.current.startOfDay(for: $0) }
-            .prepend(Calendar.current.startOfDay(for: Date()))
-            .removeDuplicates().dropFirst()
+        // Invalidate synchronously for connection/profile changes, not routine
+        // sync status or unrelated preferences. @Published emits the NEW value
+        // before storage changes, so combine publisher values (not settings reads).
+        // Row order/visibility preferences are handled above without a refetch.
+        Publishers.CombineLatest4(
+            settings.$streamSources.map { $0.first?.baseUrl },
+            settings.$syncUrl, settings.$syncToken, settings.$activeProfileId
+        )
+            .map { source, sync, token, profile in [source ?? sync, sync, token, profile] }
+            .removeDuplicates()
+            .dropFirst()
+            .handleEvents(receiveOutput: { [weak self] _ in self?.seasonalRefresh.invalidate() })
+            .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] _ in
-                guard let self else { return }
-                self.applyRowOrder(self.settings.rowOrder)
+                self?.scheduleSeasonalRefresh()
             }
             .store(in: &cancellables)
 
@@ -266,6 +278,7 @@ final class HomeViewModel: ObservableObject {
 
     /// Re-fetch every row whose fetch failed (the "Can't reach TMDB" Retry).
     func retryFailedRows() {
+        scheduleSeasonalRefresh()
         for spec in tmdbRows where (rawRows[spec.id]?.isEmpty ?? false) {
             rawRows[spec.id] = nil
             if inFlightRows.insert(spec.id).inserted { fetchRow(spec.id) }
@@ -273,13 +286,18 @@ final class HomeViewModel: ObservableObject {
         recomputeRowStates()
     }
 
-    /// Home came on screen (tab switch, app foreground, profile switch): re-read
-    /// what the active profile has already seen and re-evaluate the seasonal
-    /// windows against today's date.
+    /// Visibility AND scene activity gate every seasonal entry point.
+    func setHomeForeground(visible: Bool, active: Bool) {
+        seasonalRefresh.setForeground(visible: visible, active: active)
+    }
+
+    /// Re-read profile data. Seasonal requests remain gated even if this is
+    /// invoked by a profile callback while Home is hidden/backgrounded.
     func onHomeAppear() {
         reloadProfileCategories()
         applyRowOrder(settings.rowOrder)
         refreshHiddenKeys()
+        scheduleSeasonalRefresh()
     }
 
     func reloadProfileCategories() {
@@ -338,7 +356,8 @@ final class HomeViewModel: ObservableObject {
     /// content keep it if the refetch comes back empty — never dead-end on a
     /// transient failure mid-browse.
     func refresh() async {
-        let specs = tmdbRows
+        await refreshSeasonalRows()
+        let specs = tmdbRows.filter { !$0.id.hasPrefix("seasonal_") }
         let tmdb = self.tmdb
         guard !specs.isEmpty else { return }
         let results = await withTaskGroup(
@@ -354,7 +373,7 @@ final class HomeViewModel: ObservableObject {
             return collected
         }
         for (rowId, items) in results {
-            applyFetched(rowId: rowId, items: items, keepExistingOnFailure: true)
+            applyFetched(rowId: rowId, items: items, keepExistingOnFailure: !rowId.hasPrefix("seasonal_"))
         }
         refreshHiddenKeys()
         recomputeRowStates()
@@ -384,6 +403,30 @@ final class HomeViewModel: ObservableObject {
 
     // MARK: - Internals
 
+    private func scheduleSeasonalRefresh() {
+        seasonalRefresh.refresh()
+    }
+
+    private func refreshSeasonalRows() async {
+        await seasonalRefresh.refresh()?.value
+    }
+
+    private func clearSeasonalRows() {
+        seasonalSpecs = []
+        rawRows = rawRows.filter { !$0.key.hasPrefix("seasonal_") }
+        inFlightRows = inFlightRows.filter { !$0.hasPrefix("seasonal_") }
+        applyRowOrder(settings.rowOrder)
+    }
+
+    private func loadSeasonalRows(generation: UUID) async {
+        guard !Task.isCancelled, seasonalRefresh.isCurrent(generation) else { return }
+        let specs = await tmdb.seasonalRows()
+        guard !Task.isCancelled, seasonalGeneration == generation,
+              seasonalRefresh.isCurrent(generation) else { return }
+        seasonalSpecs = specs
+        applyRowOrder(settings.rowOrder)
+    }
+
     private func applyRowOrder(_ order: [String]) {
         let specs = resolveSpecs(order)
         if tmdbRows != specs { tmdbRows = specs }
@@ -394,54 +437,25 @@ final class HomeViewModel: ObservableObject {
         recomputeHero()
     }
 
-    /// Display order for this device, today (spec §4f/g):
-    /// - the user's stored order (already migrated `trending_movies` →
-    ///   `popular_now` by SettingsStore), or every row in default order;
-    /// - seasonal rows OUT of their window are hidden entirely;
-    /// - seasonal rows IN their window are hoisted to the top, so they land
-    ///   right after Continue Watching / My List and ahead of the general
-    ///   discovery funnel.
-    /// A stored order can never express "keep this seasonal row" for a row that
-    /// was OUT of season when it was written — Settings materializes the enabled
-    /// set from today's date, so editing anything in October drops Thanksgiving,
-    /// Christmas, New Year's and Valentine's from the order entirely. Absence is
-    /// therefore NOT a hide: a seasonal row missing from the order is re-added
-    /// unless the user explicitly switched it off (`settings.disabledRowIds`).
     private func resolveSpecs(_ order: [String]) -> [RowSpec] {
-        let all = tmdb.allRows
-        let seasonalIds = Set(tmdb.seasonalRowIds())
-        let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-
-        var base: [RowSpec]
-        if order.isEmpty {
-            base = all
-        } else {
-            base = order.compactMap { byId[$0] }
-            let present = Set(order)
-            let disabled = Set(settings.disabledRowIds)
-            base += all.filter {
-                seasonalIds.contains($0.id)
-                    && !present.contains($0.id)
-                    && !disabled.contains($0.id)
-            }
-        }
-        // A persisted order can carry the same id twice (hand-edited defaults,
-        // an interrupted migration); duplicate RowSpecs would collide in ForEach.
-        var seenIds = Set<String>()
-        base = base.filter { seenIds.insert($0.id).inserted }
-
-        let seasonal = base.filter { seasonalIds.contains($0.id) && tmdb.isSeasonalRowActive($0.id) }
-        let rest = base.filter { !seasonalIds.contains($0.id) }
-        return seasonal + rest
+        SeasonalCatalog.resolve(local: tmdb.allRows, seasonal: seasonalSpecs,
+                                order: order, disabled: settings.disabledRowIds)
     }
 
     private func fetchRow(_ rowId: String) {
-        Task { [weak self] in
-            guard let self else { return }
+        let generation = seasonalGeneration
+        let seasonal = rowId.hasPrefix("seasonal_")
+        guard !seasonal || seasonalRefresh.isCurrent(generation) else { return }
+        let task = Task { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            guard !seasonal || self.seasonalRefresh.isCurrent(generation) else { return }
             let items = await self.tmdb.rowItems(rowId: rowId, page: 1)
+            guard !Task.isCancelled,
+                  !seasonal || self.seasonalRefresh.isCurrent(generation) else { return }
             self.inFlightRows.remove(rowId)
             self.applyFetched(rowId: rowId, items: items, keepExistingOnFailure: false)
         }
+        if seasonal { seasonalRefresh.trackItems(task) }
     }
 
     private func applyFetched(rowId: String, items: [MediaItem], keepExistingOnFailure: Bool) {

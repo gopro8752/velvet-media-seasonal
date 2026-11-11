@@ -52,3 +52,45 @@ jobs:
         working-directory: tve/spectrum
       - run: npm ci && npm test && npm run build
         working-directory: clients/roku
+
+  seasonal-contract:
+    name: seasonal-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Use runner-owned temporary directory
+        run: printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify native client compilers
+        run: |
+          java -version
+          command -v swiftc
+          swiftc --version
+      - name: Seasonal Rust contract and real backend binary
+        run: |
+          cargo test --locked --manifest-path backend/Cargo.toml seasonal
+          cargo build --locked --manifest-path backend/Cargo.toml
+      - name: Authenticated HTTP contract and hot mounted manifest reload
+        run: python3 backend/tests/seasonal_e2e.py --binary backend/target/debug/velvet-backend
+      - name: Production Kotlin and Swift clients against real HTTP backend
+        run: python3 scripts/seasonal_contract.py --binary backend/target/debug/velvet-backend --download-tools
+      - name: Kotlin JVM seasonal regression tests
+        run: python3 clients/android/tests/seasonal-jvm.py --tools-dir "$TMPDIR/seasonal-kotlin-tools"
+      - name: Swift production-source seasonal regression tests
+        run: |
+          python3 clients/ios/scripts/test-seasonal.py
+          python3 clients/ios/scripts/test-seasonal.py --foreground
+          python3 clients/ios/scripts/test-seasonal-integration.py
+      - name: Build pinned pre-migration backend for real rollback
+        run: |
+          git fetch --no-tags origin f30050f65aab1e5582d4cf11e14ad7cb1d4c6bce
+          mkdir -p "$RUNNER_TEMP/seasonal-legacy"
+          git archive f30050f65aab1e5582d4cf11e14ad7cb1d4c6bce backend | tar -x -C "$RUNNER_TEMP/seasonal-legacy"
+          cargo build --locked --manifest-path "$RUNNER_TEMP/seasonal-legacy/backend/Cargo.toml" --target-dir "$RUNNER_TEMP/seasonal-legacy-target"
+      - name: Pinned legacy requests and same-database upgrade rollback
+        run: python3 backend/tests/legacy_compat.py --binary backend/target/debug/velvet-backend --baseline-binary "$RUNNER_TEMP/seasonal-legacy-target/debug/velvet-backend"

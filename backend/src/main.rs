@@ -18,6 +18,7 @@ mod audio;
 mod capacity;
 mod catalog;
 mod catalog_browse;
+mod seasonal;
 mod categories;
 mod category_queue;
 mod config;

@@ -9,7 +9,11 @@ class BuildIdentityTest {
     }
 
     @Test fun betaUsesSeparateInstallIdentity() {
-        if (BuildConfig.RECOVERY_BETA) {
+        if (BuildConfig.FLAVOR == "seasonal") {
+            assertEquals("tv.velvet.seasonal", BuildConfig.APPLICATION_ID)
+            assertTrue(BuildConfig.VERSION_NAME.endsWith("-seasonal"))
+            assertFalse(BuildConfig.RECOVERY_BETA)
+        } else if (BuildConfig.RECOVERY_BETA) {
             assertEquals("tv.velvet.beta", BuildConfig.APPLICATION_ID)
             assertTrue(BuildConfig.VERSION_NAME.endsWith("-beta"))
         } else {

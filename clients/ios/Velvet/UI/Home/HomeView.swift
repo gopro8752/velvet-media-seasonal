@@ -10,6 +10,7 @@ struct HomeView: View {
     @EnvironmentObject private var settings: SettingsStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: HomeViewModel?
+    @State private var homeVisible = false
 
     /// The namespace whose rails are shown. The migrated "default" until a
     /// profile is selected. Drives the .id() below so the profile-scoped @Query
@@ -37,30 +38,35 @@ struct HomeView: View {
                     companion: container.companion
                 )
             }
+            updateHomeForeground()
         }
         // Spec §2 (reader side): the user is about to LOOK at Continue Watching —
         // pull the cursor-based delta now and tighten the cadence to 20s while
         // Home is the visible surface. No cursor reset, no full reconcile.
         .onAppear {
-            container.sync.setHomeVisible(true)
-            container.sync.pullNow()
-            viewModel?.onHomeAppear()
+            homeVisible = true
+            updateHomeForeground()
         }
-        .onDisappear { container.sync.setHomeVisible(false) }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                container.sync.setHomeVisible(true)
-                container.sync.pullNow()
-                viewModel?.onHomeAppear()
-            } else {
-                container.sync.setHomeVisible(false)
-            }
+        .onDisappear {
+            homeVisible = false
+            updateHomeForeground()
+        }
+        .onChange(of: scenePhase) { _, _ in
+            updateHomeForeground()
         }
         .onChange(of: activeProfileId) { _, _ in
             // Different profiles have their own discovery filtering and categories.
-            viewModel?.refreshHiddenKeys()
-            viewModel?.reloadProfileCategories()
+            viewModel?.onHomeAppear()
         }
+    }
+
+    private func updateHomeForeground() {
+        container.sync.setHomeVisible(homeVisible && scenePhase == .active)
+        if homeVisible && scenePhase == .active {
+            container.sync.pullNow()
+            viewModel?.onHomeAppear()
+        }
+        viewModel?.setHomeForeground(visible: homeVisible, active: scenePhase == .active)
     }
 }
 

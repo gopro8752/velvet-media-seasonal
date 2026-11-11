@@ -31,6 +31,7 @@ final class TmdbClient: TmdbRepository {
 
     private let settings: SettingsStore
     private let session: URLSession
+    private let seasonalSession: URLSession
 
     private let rowCache = TtlLruCache<[MediaItem]>(maxEntries: 128, ttl: TmdbClient.rowTtl)
     private let movieDetailsCache = TtlLruCache<MediaDetails>(maxEntries: 192, ttl: nil)
@@ -58,13 +59,16 @@ final class TmdbClient: TmdbRepository {
         config.timeoutIntervalForRequest = 20
         config.httpAdditionalHeaders = ["Accept": "application/json"]
         self.session = session ?? URLSession(configuration: config, delegate: TmdbRedirectPolicy(), delegateQueue: nil)
+        let seasonalConfig = URLSessionConfiguration.ephemeral
+        seasonalConfig.timeoutIntervalForRequest = 20
+        seasonalConfig.urlCache = nil
+        self.seasonalSession = session ?? URLSession(configuration: seasonalConfig, delegate: SeasonalRedirectPolicy(), delegateQueue: nil)
     }
 
-    /// The home funnel, ranked by intent: seasonal (only inside its window, spec
-    /// §4f — right after the Continue Watching / My List rails and above the
-    /// general discovery rows) → what's hot → what's new → what's bingeable →
+    /// The local discovery funnel. Server seasonal rows are fetched separately
+    /// and precede these rows on Home: what's hot → what's new → what's bingeable →
     /// what's good → moods/genres → timeless → not-yet-streamable parked last.
-    let allRows: [RowSpec] = SeasonalRow.all.map(\.spec) + [
+    let allRows: [RowSpec] = [
         RowSpec(id: "top10_today", title: "Top 10 Today", style: .top10),
         RowSpec(id: "popular_now", title: "Popular Now", style: .landscape),
         RowSpec(id: "trending_shows", title: "Trending Shows", style: .landscape),
@@ -91,20 +95,32 @@ final class TmdbClient: TmdbRepository {
 
     // MARK: - TmdbRepository
 
+    func seasonalRows() async -> [RowSpec] {
+        do {
+            let data = try await seasonalGet()
+            return try JSONDecoder().decode(SeasonalCatalog.Manifest.self, from: data).specs()
+        } catch { return [] }
+    }
+
     /// `page` is what the caller asked for; discover-backed rows are served from a
     /// deterministically rotated page (spec §4e) so the same row isn't the identical
     /// 20 titles every day. The cache key carries the EFFECTIVE page, so yesterday's
     /// rotation can never be served for today's row.
     func rowItems(rowId: String, page: Int) async -> [MediaItem] {
+        if rowId.hasPrefix("seasonal_") {
+            do {
+                let data = try await seasonalGet(rowID: rowId, page: page)
+                return try JSONDecoder().decode(SeasonalCatalog.RowPage.self, from: data)
+                    .media(rowID: rowId, requestedPage: page)
+            } catch { return [] }
+        }
         let effectivePage = Self.rotatedPage(rowId: rowId, requestedPage: page)
         let cacheKey = "\(rowId)#\(effectivePage)"
         if let cached = await rowCache.get(cacheKey) { return cached }
         var items: [MediaItem]
         do {
             items = try await fetchRow(rowId: rowId, page: effectivePage)
-            // Thin catalogues (New Year's has a single page under the availability
-            // gate) run out before the rotation does — fall back rather than
-            // collapse the row for two days out of three.
+            // Thin local catalogues may run out before the daily rotation.
             if items.isEmpty, effectivePage != page {
                 items = try await fetchRow(rowId: rowId, page: page)
             }
@@ -173,18 +189,6 @@ final class TmdbClient: TmdbRepository {
     // MARK: - row recipes (query params copied 1:1 from the Android impl)
 
     private func fetchRow(rowId: String, page: Int) async throws -> [MediaItem] {
-        // Seasonal/holiday collections (spec §4f). Outside its window a row yields
-        // nothing at all — no request, no cache entry, and Home collapses it even
-        // if the caller forgot to check isSeasonalRowActive().
-        if let seasonal = SeasonalRow.find(rowId) {
-            guard seasonal.isActive(on: Date()) else { return [] }
-            return try await discoverMovies(page, [
-                ("with_keywords", String(seasonal.keywordId)),
-                ("vote_count.gte", "25"),
-                ("sort_by", "popularity.desc"),
-            ])
-        }
-
         switch rowId {
         // Mixed trending, minus movies with nothing to stream yet: /trending is the
         // one row that can't express the availability gate as query params, so the
@@ -658,6 +662,18 @@ final class TmdbClient: TmdbRepository {
     }
 
     // MARK: - http
+
+    private func seasonalGet(rowID: String? = nil, page: Int = 1) async throws -> Data {
+        let connection = await MainActor.run {
+            TmdbConnection(backendURL: settings.backendUrl, syncURL: settings.syncUrl,
+                           token: settings.syncToken, standaloneKey: "")
+        }
+        let request = try SeasonalCatalog.request(connection: connection, rowID: rowID, page: page)
+        let (data, response) = try await seasonalSession.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              http.url == request.url else { throw URLError(.badServerResponse) }
+        return data
+    }
 
     private func httpGet(_ path: String, _ params: [(String, String)]) async throws -> Data {
         // Snapshot settings for every request so backend/token edits apply

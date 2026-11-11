@@ -185,7 +185,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         item { SettingsSectionHeader("Home Rows") }
         item {
             Text(
-                text = "Rows appear on Home in this order. Select a row to show or hide it.",
+                text = "Seasonal rows are managed by your server. Select other rows to show or hide them.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = VelvetColors.TextTertiary,
                 modifier = Modifier.padding(bottom = 2.dp),
@@ -367,6 +367,15 @@ private fun HomeRowItem(
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
 ) {
+    if (entry.serverManaged) {
+        Text(
+            text = "${entry.spec.title} · Managed by server",
+            style = MaterialTheme.typography.titleMedium,
+            color = VelvetColors.TextTertiary,
+            modifier = Modifier.width(SettingsDefaults.SectionWidth).padding(16.dp),
+        )
+        return
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.width(SettingsDefaults.SectionWidth),

@@ -21,20 +21,18 @@ import tv.velvet.data.net.await
 import tv.velvet.data.settings.SettingsRepository
 import java.io.IOException
 import java.time.LocalDate
-import java.time.MonthDay
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 
 /**
  * TMDB-backed discovery. Every endpoint + query recipe here was verified against the
- * live API with curl (2026-06-09; the v1.2.0 availability gate, popular_now, Top 10
- * filter and the five holiday keyword rows re-verified 2026-08-06) — see TmdbDtos.kt
- * for the matching response shapes.
+ * live API with curl — see TmdbDtos.kt for the matching response shapes.
+ * Seasonal discovery and membership are owned exclusively by the Velvet backend.
  *
  * Home rules (v1.2.0): every movie discover row carries the availability gate so nothing
- * theatrical-only reaches Home, discover rows rotate their page daily for variety, and
- * seasonal rows are only shown inside their calendar window (see [isSeasonalRowActive]).
+ * theatrical-only reaches Home; ordinary discover rows rotate their page daily.
+ * Seasonal rows bypass rotation and row caches entirely.
  *
  * Caching: synchronized LRU maps — rows ~30 min TTL per (rowId, page); movie details
  * unlimited TTL (effectively immutable), show details ~4 h TTL (the process can stay
@@ -68,62 +66,14 @@ class TmdbRepositoryImpl(
         const val PAGE_ROTATION_SPAN = 3
 
         /**
-         * Below this, a rotated page is a thin tail (the Valentine's keyword is three pages
-         * deep) — refetch the page that was actually asked for rather than show a stub row.
+         * Below this, a rotated page is a thin tail — refetch the requested page.
          */
         const val MIN_ROTATED_ROW_ITEMS = 10
 
         /** Top 10: how many trending candidates we're willing to availability-check. */
         const val TOP10_CANDIDATES = 15
         const val TOP10_SIZE = 10
-
-        // Seasonal keyword ids — verified live via /search/keyword (2026-08-06).
-        // "valentine's day" (160404) is the usable one: plain "valentine" (251912) has a
-        // single gated result and "valentines" (366924) has none.
-        const val KEYWORD_HALLOWEEN = "3335"
-        const val KEYWORD_THANKSGIVING = "4543"
-        const val KEYWORD_CHRISTMAS = "207317"
-        const val KEYWORD_NEW_YEAR = "252123"
-        const val KEYWORD_VALENTINES = "160404"
-
-        /**
-         * The `christmas` keyword is a loose tag: any film with a Christmas SCENE carries
-         * it, so popularity alone opened the row with Harry Potter and the Chamber of
-         * Secrets, Iron Man 3, Die Hard and Eyes Wide Shut (verified 2026-08-06). Narrowing
-         * to family/comedy/romance leaves 234 titles and a head that reads like a Christmas
-         * row: Red One, The Grinch, It's a Wonderful Life, The Nightmare Before Christmas,
-         * Love Actually, Christmas Vacation. The other four keywords need no such help.
-         */
-        const val CHRISTMAS_GENRES = "10751|35|10749"
     }
-
-    /** A calendar window that may wrap the year boundary (New Year's does). */
-    private class SeasonalWindow(private val start: MonthDay, private val end: MonthDay) {
-        fun contains(day: MonthDay): Boolean =
-            if (start <= end) day >= start && day <= end else day >= start || day <= end
-    }
-
-    /**
-     * Seasonal rows and their active windows (device-local date, spec §4f). Iteration order
-     * is the display order used in [allRows]: in the two overlaps (Nov 1–30 and Dec 26–31)
-     * the nearer holiday leads.
-     */
-    private val seasonalWindows: Map<String, SeasonalWindow> = linkedMapOf(
-        // Aug 1, not late September: spooky season starts in August in this house.
-        "holiday_halloween" to SeasonalWindow(MonthDay.of(8, 1), MonthDay.of(10, 31)),
-        "holiday_thanksgiving" to SeasonalWindow(MonthDay.of(11, 1), MonthDay.of(11, 30)),
-        "holiday_christmas" to SeasonalWindow(MonthDay.of(11, 1), MonthDay.of(12, 31)),
-        "holiday_newyear" to SeasonalWindow(MonthDay.of(12, 26), MonthDay.of(1, 5)),
-        "holiday_valentines" to SeasonalWindow(MonthDay.of(2, 1), MonthDay.of(2, 15)),
-    )
-
-    private val seasonalRows: List<RowSpec> = listOf(
-        RowSpec("holiday_halloween", "Halloween Frights", RowStyle.POSTER),
-        RowSpec("holiday_thanksgiving", "Thanksgiving Picks", RowStyle.POSTER),
-        RowSpec("holiday_christmas", "Christmas Movies", RowStyle.POSTER),
-        RowSpec("holiday_newyear", "New Year's Eve", RowStyle.POSTER),
-        RowSpec("holiday_valentines", "Valentine's Day", RowStyle.POSTER),
-    )
 
     /**
      * Rows fetched from /discover — these rotate their page daily (spec §4e). Endpoint-backed
@@ -134,7 +84,7 @@ class TmdbRepositoryImpl(
         "popular_now", "new_to_stream", "new_shows", "bingeworthy", "acclaimed", "hidden_gems",
         "action", "comedy", "thrillers", "scifi_fantasy", "horror", "feel_good", "date_night",
         "animation_family", "docs", "anime", "modern_classics", "classics",
-    ) + seasonalWindows.keys
+    )
 
     private val rowCache = TtlLruCache<String, List<MediaItem>>(maxEntries = 128, ttlMillis = ROW_TTL_MS)
     private val movieDetailsCache = TtlLruCache<String, MediaDetails>(maxEntries = 192, ttlMillis = null)
@@ -155,17 +105,8 @@ class TmdbRepositoryImpl(
         10766 to "Soap", 10767 to "Talk", 10768 to "War & Politics", 37 to "Western",
     )
 
-    /**
-     * The home funnel, ranked by intent: in-season holiday collections → what's hot →
-     * what's new → what's bingeable → what's good → moods/genres → timeless →
-     * not-yet-streamable parked last.
-     *
-     * Seasonal rows lead the list on purpose: the UI shows only the ones
-     * [isSeasonalRowActive] accepts, so keeping them first puts an active holiday row
-     * near the top of Home (after Continue Watching / My List) and costs nothing the
-     * other ~10 months of the year.
-     */
-    override val allRows: List<RowSpec> = seasonalRows + listOf(
+    /** Ordinary discovery rows; server seasonal rows arrive through seasonalRows(). */
+    override val allRows: List<RowSpec> = listOf(
         RowSpec("top10_today", "Top 10 Today", RowStyle.TOP10),
         RowSpec("popular_now", "Popular Now", RowStyle.LANDSCAPE),
         RowSpec("trending_shows", "Trending Shows", RowStyle.LANDSCAPE),
@@ -190,16 +131,12 @@ class TmdbRepositoryImpl(
         RowSpec("coming_soon", "Coming Soon", RowStyle.POSTER),
     )
 
-    override fun seasonalRowIds(): List<String> = seasonalWindows.keys.toList()
+    private val seasonalCatalog = SeasonalCatalog(client, json) { settings.settings.first() }
 
-    override fun isSeasonalRowActive(rowId: String, today: LocalDate): Boolean =
-        seasonalWindows[rowId]?.contains(MonthDay.from(today)) == true
+    override suspend fun seasonalRows(): List<RowSpec> = seasonalCatalog.discover()
 
     override suspend fun rowItems(rowId: String, page: Int): List<MediaItem> {
-        // Spec §4f: a seasonal row outside its window is hidden ENTIRELY. The UI filters
-        // them out of Home and Settings; the data layer refuses as well, so a stored row
-        // order that still pins one can't put "Christmas Movies" on screen in August.
-        if (rowId in seasonalWindows && !isSeasonalRowActive(rowId, LocalDate.now())) return emptyList()
+        if (rowId.startsWith("seasonal_")) return seasonalCatalog.items(rowId, page)
         val fetchPage = rotatedPage(rowId, page)
         val cacheKey = "$rowId#$fetchPage" // rotation changes the key, so a new day refetches
         rowCache.get(cacheKey)?.let { return it }
@@ -209,8 +146,7 @@ class TmdbRepositoryImpl(
         // Home was just a silent black page. HomeViewModel.fetchRow is the ONE place that
         // decides Failed; an empty list from here always means "genuinely nothing".
         val rotated = fetchRow(rowId, fetchPage)
-        // A rotated page can overshoot a short result set (the New Year's keyword row is
-        // one page deep, Valentine's three) — fall back to the page actually asked for
+        // A rotated page can overshoot a short result set — fall back to the page asked for
         // instead of collapsing the row on two days out of three. This refetch is an
         // enhancement, not the row: if IT blips, keep the page we already have.
         val items = if (rotated.size < MIN_ROTATED_ROW_ITEMS && fetchPage != page) {
@@ -335,14 +271,6 @@ class TmdbRepositoryImpl(
             "sort_by" to "vote_average.desc",
             "with_original_language" to "en",
         )
-
-        // Seasonal collections (spec §4f). Keyword ids verified live; the availability gate
-        // rides along via discoverMovies, so December's picks are all actually streamable.
-        "holiday_halloween" -> seasonalRow(page, KEYWORD_HALLOWEEN)
-        "holiday_thanksgiving" -> seasonalRow(page, KEYWORD_THANKSGIVING)
-        "holiday_christmas" -> seasonalRow(page, KEYWORD_CHRISTMAS, genres = CHRISTMAS_GENRES)
-        "holiday_newyear" -> seasonalRow(page, KEYWORD_NEW_YEAR)
-        "holiday_valentines" -> seasonalRow(page, KEYWORD_VALENTINES)
 
         "in_theaters" -> listPage(
             "movie/now_playing", MediaType.MOVIE, page,
@@ -565,25 +493,6 @@ class TmdbRepositoryImpl(
         "vote_count.gte" to minVotes,
         "sort_by" to "popularity.desc",
         "with_original_language" to "en",
-    )
-
-    /**
-     * Holiday collection row: one verified keyword, popularity-ranked, lightly
-     * quality-floored. [genres] narrows keywords that are too loose to carry a row on
-     * their own (see [CHRISTMAS_GENRES]).
-     */
-    private suspend fun seasonalRow(
-        page: Int,
-        keywordId: String,
-        genres: String? = null,
-    ): List<MediaItem> = discoverMovies(
-        page,
-        *listOfNotNull(
-            "with_keywords" to keywordId,
-            "sort_by" to "popularity.desc",
-            "vote_count.gte" to "25",
-            genres?.let { "with_genres" to it },
-        ).toTypedArray(),
     )
 
     /**

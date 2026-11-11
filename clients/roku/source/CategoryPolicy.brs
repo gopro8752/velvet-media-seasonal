@@ -7,13 +7,30 @@ function VLegacyHalloweenResponseCurrent(context as dynamic, profileId as string
     return false
 end function
 
-function VSeasonalMovieRowActive(id as string, month as integer, day as integer) as boolean
-    if id = "holiday_halloween" then return month >= 8 and month <= 10
-    if id = "holiday_thanksgiving" then return month = 11
-    if id = "holiday_christmas" then return month = 11 or month = 12
-    if id = "holiday_newyear" then return (month = 12 and day >= 26) or (month = 1 and day <= 5)
-    if id = "holiday_valentines" then return month = 2 and day <= 15
-    return true
+' Namespace detection is only for fail-closed cache eviction, never activation.
+function VIsSeasonalCatalogRow(row as dynamic) as boolean
+    id = VStr(VGet(row, "id"))
+    return Left(id, 9) = "seasonal_" or Left(id, 8) = "holiday_"
+end function
+
+function VCatalogRowsFromResponse(data as dynamic) as object
+    output = []
+    for each row in VArray(VGet(data, "rows"))
+        failed = VBool(VGet(row, "stale"))
+        for each id in VArray(VGet(data, "failedRows"))
+            if VStr(id) = VStr(VGet(row, "id")) then failed = true
+        end for
+        if not VIsSeasonalCatalogRow(row) or not failed then output.Push(row)
+    end for
+    return output
+end function
+
+function VCatalogRowsWithoutSeasonal(rows as dynamic) as object
+    output = []
+    for each row in VArray(rows)
+        if not VIsSeasonalCatalogRow(row) then output.Push(row)
+    end for
+    return output
 end function
 
 ' Rendering and Play all/Shuffle share the same saved, profile-scoped category list.

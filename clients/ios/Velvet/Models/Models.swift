@@ -109,6 +109,7 @@ struct RowSpec: Identifiable, Hashable {
     let id: String
     let title: String
     let style: RowStyle
+    var artworkUrl: URL? = nil
 }
 
 /// Identity of a playable thing. For movies season/episode are nil; for shows

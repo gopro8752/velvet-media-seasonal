@@ -113,6 +113,33 @@ function VOrderedHomeRows(rows as dynamic, order as dynamic, hidden as dynamic) 
     return result
 end function
 
+' Seasonal rows keep server order between personal rows and general discovery.
+' Saved moves apply within the other groups; explicit hides still apply to all.
+function VServerOrderedHomeRows(rows as dynamic, order as dynamic, hidden as dynamic) as object
+    personal = []
+    seasonal = []
+    discovery = []
+    for each row in VArray(rows)
+        id = VStr(VGet(row, "id"))
+        if VBool(VGet(row, "category")) or id = "continue" or id = "mylist"
+            personal.Push(row)
+        else if Left(id, 9) = "seasonal_"
+            seasonal.Push(row)
+        else
+            discovery.Push(row)
+        end if
+    end for
+    if seasonal.Count() = 0 then return VOrderedHomeRows(rows, order, hidden)
+    result = VOrderedHomeRows(personal, order, hidden)
+    for each row in VOrderedHomeRows(seasonal, [], hidden)
+        result.Push(row)
+    end for
+    for each row in VOrderedHomeRows(discovery, order, hidden)
+        result.Push(row)
+    end for
+    return result
+end function
+
 function VMoveHomeRow(rows as dynamic, order as dynamic, id as string, direction as integer) as object
     current = VOrderedHomeRows(rows, order, [])
     ids = []

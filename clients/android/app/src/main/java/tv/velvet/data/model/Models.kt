@@ -101,6 +101,7 @@ data class RowSpec(
     val id: String,
     val title: String,
     val style: RowStyle,
+    val artworkUrl: String? = null,
 )
 
 /** Identity of a playable thing. For movies season/episode are null. */

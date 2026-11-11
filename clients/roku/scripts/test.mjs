@@ -30,13 +30,18 @@ try {
     mkdirSync(path.dirname(target), { recursive: true });
     copyFileSync(path.join(root, source), target);
   }
+  // Exercise the real home controller with portable boundary stubs, not a Roku UI.
+  const controllerSources = ['components/VelvetScene.brs', 'components/VelvetPreferencesController.brs'];
+  mkdirSync(path.join(sandbox, 'components'), { recursive: true });
+  for (const source of controllerSources) copyFileSync(path.join(root, source), path.join(sandbox, source));
   for (const spec of specs) {
+    const specSources = spec.endsWith('home-authority.spec.brs') ? [...sources, ...controllerSources] : sources;
     const relative = path.relative(root, spec);
     const target = path.join(sandbox, relative);
     mkdirSync(path.dirname(target), { recursive: true });
     copyFileSync(spec, target);
     const result = spawnSync(process.execPath, [require.resolve('@rokucommunity/brs/bin/cli.js'),
-      '--root', sandbox, '--no-color', ...sources.map(p => path.join(sandbox, p)), target], {
+      '--root', sandbox, '--no-color', ...specSources.map(p => path.join(sandbox, p)), target], {
       cwd: sandbox, encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024
     });
     if (result.stdout) process.stdout.write(result.stdout);

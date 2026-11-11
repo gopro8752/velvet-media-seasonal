@@ -15,7 +15,7 @@ import tv.velvet.data.model.RowSpec
  *    (posters w500, backdrops w1280, logos w500 preferring PNG, stills w400, profiles w185).
  *  - Every MediaItem MUST have title/year/rating populated — cards always show them.
  *  - details() must fetch external_ids (imdbId) and images (logo) via append_to_response.
- *  - In-memory LRU caching per (rowId,page) and per details id; this app restarts rarely.
+ *  - In-memory LRU caching for ordinary discovery/details; seasonal reads are never cached.
  *  - Availability gate: every movie discover row must send with_release_type=4|5 scoped by
  *    region=US AND release_date.lte=today (TMDB ignores with_release_type unless it is
  *    region-scoped with a release_date bound), and /trending-backed rows must drop movies
@@ -27,30 +27,15 @@ import tv.velvet.data.model.RowSpec
  */
 interface TmdbRepository {
 
-    /**
-     * All rows Velvet knows how to render, in default order. Stable ids — stored in settings.
-     * The seasonal/holiday rows lead the list so an ACTIVE one lands near the top of Home;
-     * callers MUST hide seasonal rows that [isSeasonalRowActive] rejects.
-     */
+    /** Ordinary discovery rows, in default order. Stable ids are stored in settings. */
     val allRows: List<RowSpec>
 
-    /**
-     * Ids of the seasonal/holiday rows inside [allRows] — the subset governed by
-     * [isSeasonalRowActive]. Everything else in [allRows] is always eligible.
-     */
-    fun seasonalRowIds(): List<String>
+    /** Fresh active global rows in backend order. Failure must hide seasonal sections. */
+    suspend fun seasonalRows(): List<RowSpec>
 
     /**
-     * True when [rowId] is a seasonal row whose calendar window contains [today]
-     * (device-local date). False for any non-seasonal id, so it doubles as
-     * "is this row currently allowed on Home / enabled-by-default in Settings".
-     * Windows: Halloween Aug 1–Oct 31, Thanksgiving Nov 1–30, Christmas Nov 1–Dec 31,
-     * New Year's Dec 26–Jan 5, Valentine's Feb 1–15.
-     */
-    fun isSeasonalRowActive(rowId: String, today: java.time.LocalDate = java.time.LocalDate.now()): Boolean
-
-    /**
-     * Items for a TMDB-backed row. Not called for continue_watching / my_list. Page is 1-based.
+     * Items for a discovery row. Seasonal ids go directly to the backend, without rotation
+     * or cache. Not called for continue_watching / my_list. Page is 1-based.
      * Discover-backed rows rotate the page they actually fetch once per day for variety, so
      * page 1 is "today's slice", not literally TMDB page 1.
      */
