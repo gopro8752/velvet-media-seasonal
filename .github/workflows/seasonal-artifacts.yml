@@ -23,6 +23,8 @@ jobs:
       - name: Use runner-owned temporary directory
         run: printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify clean build context contains embedded runtime inputs
+        run: python3 scripts/test_seasonal_build_context.py
       - name: Build local image for this exact checked-out SHA
         shell: bash
         run: |
@@ -32,11 +34,12 @@ jobs:
           # embedded input. Stage only its existing allowlist plus the manifest;
           # never widen the context to runtime config/state or secret files.
           BUILD_CONTEXT="$(mktemp -d "$RUNNER_TEMP/seasonal-build-context.XXXXXX")"
-          mkdir -p "$BUILD_CONTEXT/src" "$BUILD_CONTEXT/admin"
+          mkdir -p "$BUILD_CONTEXT/src/data" "$BUILD_CONTEXT/admin"
           cp backend/Cargo.toml backend/Cargo.lock backend/LICENSE \
             backend/THIRD_PARTY_NOTICES.md backend/Dockerfile \
             backend/seasonal.default.json "$BUILD_CONTEXT/"
           cp backend/src/*.rs backend/src/epg_mappings.json "$BUILD_CONTEXT/src/"
+          cp backend/src/data/spongebob_episode_groups.json "$BUILD_CONTEXT/src/data/"
           cp backend/admin/*.html backend/admin/*.css backend/admin/*.js "$BUILD_CONTEXT/admin/"
           docker build --target runtime \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
