@@ -29,6 +29,29 @@ class TmdbMetadataRequestTest {
         syncToken = " app-token ",
     )
 
+    @Test fun seasonalDiscoveryUsesOnlyConfiguredBackendAndAppToken() {
+        val request = tmdbMetadataRequest(settings, "catalog/v1/seasonal", emptyMap())
+        assertEquals("/velvet/catalog/v1/seasonal", request.url.encodedPath)
+        assertNull(request.url.query)
+        assertEquals("Bearer app-token", request.header("Authorization"))
+        assertThrows(IOException::class.java) {
+            tmdbMetadataRequest(settings.copy(backendUrl = ""), "catalog/v1/seasonal", emptyMap())
+        }
+    }
+
+    @Test fun seasonalRequestsRejectDatesInvalidIdsAndOutOfRangePages() {
+        for ((path, params) in listOf(
+            "catalog/v1/seasonal" to mapOf("date" to "2026-01-01"),
+            "catalog/v1/seasonal/rows/seasonal_valid" to mapOf("page" to "0"),
+            "catalog/v1/seasonal/rows/seasonal_valid" to mapOf("page" to "21"),
+            "catalog/v1/seasonal/rows/seasonal_Upper" to mapOf("page" to "1"),
+            "catalog/v1/seasonal/rows/holiday_christmas" to mapOf("page" to "1"),
+            "catalog/v1/seasonal/rows/seasonal_valid/extra" to mapOf("page" to "1"),
+        )) {
+            assertThrows(IllegalArgumentException::class.java) { tmdbMetadataRequest(settings, path, params) }
+        }
+    }
+
     @Test fun backendOwnsCredentialsAndPreservesEndpointAndDiscoveryQuery() {
         val request = tmdbMetadataRequest(settings, "discover/movie", mapOf(
             "with_genres" to "28|12", "page" to "2", "api_key" to "injected-key",

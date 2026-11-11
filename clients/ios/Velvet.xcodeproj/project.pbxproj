@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        5EA50A1C0000000000000001 /* SeasonalCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EA50A1C0000000000000002 /* SeasonalCatalog.swift */; };
 		00DF1C7E6EBDDB3F929C1EA5 /* EpisodeNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4D8E7F0F45A05EF71060A51 /* EpisodeNavigation.swift */; };
 		0279C2BF6286C13799502835 /* SportsPlaybackStartup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FAEB71F4389A4E36576DDC0 /* SportsPlaybackStartup.swift */; };
 		04F74C4B9E07ED566733605C /* TmdbRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA4FBD00A1D858E37D72C02 /* TmdbRepository.swift */; };
@@ -120,6 +121,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        5EA50A1C0000000000000002 /* SeasonalCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeasonalCatalog.swift; sourceTree = "<group>"; };
 		003D2FBE11E617C14868EB66 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		03914328D9BE086176EB5DB7 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		054E78FA16DFFF05D359FE2D /* FairPlayLiveEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FairPlayLiveEngine.swift; sourceTree = "<group>"; };
@@ -468,6 +470,7 @@
 				5C9B08FCAB984B57782DFBDD /* RecoveryPlaybackMetrics.swift */,
 				3743862E588280F86EFDBDDD /* ReleaseGroupBlocks.swift */,
 				513BC75CF247A64964A45464 /* SettingsStore.swift */,
+                5EA50A1C0000000000000002 /* SeasonalCatalog.swift */,
 				4439816CB9ED73DB1735FFF9 /* StreamClient.swift */,
 				51F17D66F1E718884199AD55 /* StreamLookahead.swift */,
 				2F856C1342838CA494D6AC96 /* StreamRepository.swift */,
@@ -675,6 +678,7 @@
 				BD77C232BDD8B4A1AE405724 /* SearchView.swift in Sources */,
 				1A9A0EE13C15F50A7D1D29C9 /* SearchViewModel.swift in Sources */,
 				7BD056B7BCD4C2B0F71E02A1 /* SettingsStore.swift in Sources */,
+                5EA50A1C0000000000000001 /* SeasonalCatalog.swift in Sources */,
 				907571A2080413073C53E309 /* SettingsView.swift in Sources */,
 				0279C2BF6286C13799502835 /* SportsPlaybackStartup.swift in Sources */,
 				9518649D894038F2BF7BD86F /* SportsPlayerView.swift in Sources */,

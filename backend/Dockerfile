@@ -8,6 +8,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock LICENSE ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --locked --release && rm -rf src
 COPY src ./src
+# seasonal.rs embeds this fallback at compile time with include_bytes!.
+COPY seasonal.default.json ./
 COPY admin ./admin
 # Bust the stale main.rs fingerprint so the real sources rebuild.
 RUN touch src/main.rs && cargo build --locked --release

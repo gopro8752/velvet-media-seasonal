@@ -9,10 +9,8 @@ package tv.velvet.ui
  * gated `popular_now`, so a stored `trending_movies` swaps in place. Applied on every
  * READ (Home + Settings) — the stored value re-persists itself on the next row edit.
  *
- * The other half of spec §4g is "new ids append": a stored order written by an older
- * build lists only the ids that build knew about, so mapping it 1:1 would make every row
- * added since INVISIBLE forever (v1.2.0's five holiday rows). [isAddedAfterV1] /
- * [migrateAndAppend] put those back on the end.
+ * New ordinary ids append to older stored orders. Seasonal ids are never preferences:
+ * only the current server list supplies them, always in server order at the front.
  */
 object HomeRowOrder {
 
@@ -45,16 +43,14 @@ object HomeRowOrder {
     /** True when [rowId] post-dates v1.1's row set — such an id appends to a stored order. */
     fun isAddedAfterV1(rowId: String): Boolean = rowId !in KNOWN_IDS_V1
 
-    /**
-     * [migrate], then append every id in [allIds] that post-dates the stored order and
-     * isn't in it already, keeping [allIds]' relative order. An EMPTY stored order is
-     * returned untouched — it is the "no preference, use defaults" sentinel, and
-     * fabricating a list here would silently turn it into a pinned one.
-     */
+    /** Resolve for display, not persistence; unknown/retired ids cannot resurrect rows. */
     fun migrateAndAppend(order: List<String>, allIds: List<String>): List<String> {
-        val migrated = migrate(order)
-        if (migrated.isEmpty()) return migrated
+        val seasonal = allIds.filter { it.startsWith("seasonal_") }
+        val regular = allIds.filterNot { it.startsWith("seasonal_") }
+        if (order.isEmpty()) return seasonal + regular
+        val migrated = migrate(order).filter { it in regular }
+        if (migrated.isEmpty()) return seasonal + regular
         val present = migrated.toHashSet()
-        return migrated + allIds.filter { it !in present && isAddedAfterV1(it) }
+        return seasonal + migrated + regular.filter { it !in present && isAddedAfterV1(it) }
     }
 }

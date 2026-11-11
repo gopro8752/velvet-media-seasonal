@@ -15,7 +15,8 @@ private val Context.launcherStore by preferencesDataStore("launcher_featured")
 /** A small, per-profile display cache filled by normal Velvet browsing, never by a binder request. */
 class LauncherFeaturedCache(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
-    private fun key(profile: String) = stringPreferencesKey("profile_" + MessageDigest.getInstance("SHA-256")
+    // Old featured entries could originate in client-calendar rows; do not revive them.
+    private fun key(profile: String) = stringPreferencesKey("ordinary_profile_" + MessageDigest.getInstance("SHA-256")
         .digest(profile.toByteArray()).joinToString("") { "%02x".format(it) })
     suspend fun read(profile: String): List<LauncherTitle> = context.launcherStore.data.first()[key(profile)]?.let {
         runCatching { json.decodeFromString(ListSerializer(LauncherTitle.serializer()), it) }.getOrNull()

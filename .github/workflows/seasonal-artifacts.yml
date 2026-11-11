@@ -1,0 +1,151 @@
+name: Experimental seasonal artifacts
+
+on:
+  push:
+    branches: [wt/t_fbcd5d8f]
+
+# Artifacts only: no registry login, package write permission, environment, or deploy.
+permissions:
+  contents: read
+
+concurrency:
+  group: seasonal-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    if: >-
+      github.repository == 'gopro8752/velvet-media-seasonal' &&
+      (github.ref == 'refs/heads/wt/t_fbcd5d8f' || github.head_ref == 'wt/t_fbcd5d8f')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build local image for this exact checked-out SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          # The repository's deny-all backend/.dockerignore predates this
+          # embedded input. Stage only its existing allowlist plus the manifest;
+          # never widen the context to runtime config/state or secret files.
+          BUILD_CONTEXT="$(mktemp -d "$RUNNER_TEMP/seasonal-build-context.XXXXXX")"
+          mkdir -p "$BUILD_CONTEXT/src" "$BUILD_CONTEXT/admin"
+          cp backend/Cargo.toml backend/Cargo.lock backend/LICENSE \
+            backend/THIRD_PARTY_NOTICES.md backend/Dockerfile \
+            backend/seasonal.default.json "$BUILD_CONTEXT/"
+          cp backend/src/*.rs backend/src/epg_mappings.json "$BUILD_CONTEXT/src/"
+          cp backend/admin/*.html backend/admin/*.css backend/admin/*.js "$BUILD_CONTEXT/admin/"
+          docker build --target runtime \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --tag "velvet-seasonal:sha-$GITHUB_SHA" "$BUILD_CONTEXT"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "velvet-seasonal:sha-$GITHUB_SHA")" = "$GITHUB_SHA"
+      - name: Exercise this image over isolated real HTTP
+        run: python3 scripts/seasonal_image_smoke.py --image "velvet-seasonal:sha-$GITHUB_SHA"
+      - name: Save image archive and exact-SHA provenance (no push)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/image
+          docker image inspect "velvet-seasonal:sha-$GITHUB_SHA" > artifacts/image/image-inspect.json
+          docker save "velvet-seasonal:sha-$GITHUB_SHA" | gzip -1 > "artifacts/image/velvet-seasonal-sha-$GITHUB_SHA.tar.gz"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('artifacts/image')
+          archive = next(root.glob('*.tar.gz'))
+          digest = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
+          image = json.loads((root / 'image-inspect.json').read_text())[0]
+          sha = os.environ['GITHUB_SHA']
+          assert image['Config']['Labels']['org.opencontainers.image.revision'] == sha
+          (root / 'SHA256SUMS').write_text(f'{digest}  {archive.name}\n')
+          (root / 'provenance.json').write_text(json.dumps({
+              'sourceSha': sha, 'sourceRef': os.environ['GITHUB_REF'],
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'runId': os.environ['GITHUB_RUN_ID'], 'runAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'imageTag': f'velvet-seasonal:sha-{sha}', 'imageId': image['Id'],
+              'archive': archive.name, 'archiveSha256': digest,
+              'verification': 'isolated-image-http-smoke-passed',
+              'registryPushed': False, 'deployed': False}, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: seasonal-image-sha-${{ github.sha }}
+          path: artifacts/image/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+  android:
+    if: >-
+      github.repository == 'gopro8752/velvet-media-seasonal' &&
+      (github.ref == 'refs/heads/wt/t_fbcd5d8f' || github.head_ref == 'wt/t_fbcd5d8f')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install the project's native Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          java -version
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          # Hosted Android runners have accepted licenses; sdkmanager fails if not.
+          "$SDKMANAGER" --install 'platforms;android-37.2' 'build-tools;36.0.0' 'platform-tools'
+      - name: Native seasonal unit tests and isolated arm64 debug APK
+        working-directory: clients/android
+        run: ./gradlew --no-daemon :app:testSeasonalDebugUnitTest :app:assembleSeasonalDebug -PvelvetAbis=arm64-v8a
+      - name: Verify APK identity and record exact-SHA provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/android
+          cp clients/android/app/build/outputs/apk/seasonal/debug/*.apk artifacts/android/
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging artifacts/android/*.apk > artifacts/android/apk-badging.txt
+          python3 - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+          root = Path('artifacts/android')
+          badging = (root / 'apk-badging.txt').read_text()
+          assert re.search(r"^package: name='tv\.velvet\.seasonal' ", badging, re.M), badging
+          assert "application-label:'Velvet Seasonal Lab'" in badging, badging
+          assert "versionName='1.14.0-seasonal'" in badging, badging
+          apks = sorted(root.glob('*.apk'))
+          assert len(apks) == 1, apks
+          checksums = {p.name: hashlib.file_digest(p.open('rb'), 'sha256').hexdigest() for p in apks}
+          (root / 'SHA256SUMS').write_text(''.join(f'{digest}  {name}\n' for name, digest in checksums.items()))
+          (root / 'provenance.json').write_text(json.dumps({
+              'sourceSha': os.environ['GITHUB_SHA'], 'sourceRef': os.environ['GITHUB_REF'],
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'runId': os.environ['GITHUB_RUN_ID'], 'runAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'applicationId': 'tv.velvet.seasonal', 'label': 'Velvet Seasonal Lab',
+              'variant': 'seasonalDebug', 'abi': 'arm64-v8a', 'apkSha256': checksums,
+              'verification': 'native-seasonal-unit-tests-and-assemble-passed',
+              'signing': 'ephemeral CI debug key; not a stable/release key',
+              'installed': False}, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: seasonal-android-sha-${{ github.sha }}
+          path: |
+            artifacts/android/
+            clients/android/app/build/test-results/testSeasonalDebugUnitTest/
+            clients/android/app/build/reports/tests/testSeasonalDebugUnitTest/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false

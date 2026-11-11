@@ -31,6 +31,16 @@ ROKU_HOST=roku.example.test npm run deploy
 
 Replace that documentation hostname with your Roku's actual hostname or IP. The helper verifies developer mode, builds and tests, then prompts for the password without displaying it. For automation, use a private file via `ROKU_PASSWORD_FILE` with mode `600`. Do not place credentials in source or commit configuration containing them. The helper does not enable developer mode for you.
 
+## Seasonal home catalog
+
+Home uses the additive `/catalog/v1/home` endpoint without a device-date override; the legacy `/catalog/home` endpoint retains its existing date semantics for old clients. Only an unsupported-version HTTP 404 triggers one fallback to `/catalog/home`, also without a date query. That fallback discards every `holiday_` or `seasonal_` row structurally and keeps ordinary discovery plus profile-saved categories, including on a cold start. Its request shares the home concurrency slot and carries a legacy context flag, so timer ticks coalesce and another 404 cannot recurse. Each later refresh probes v1 again; transient failures (including 500) and authentication failures (401) never trigger legacy fallback.
+
+The backend owns seasonal activation, titles, inline items, and the relative order of `seasonal_<id>` rows; Roku has no holiday calendar. Seasonal rows stay in server order after Continue Watching, My List, and profile-saved categories, ahead of general discovery, even when a stored layout tries to move them. Explicit per-profile hide preferences still apply. Home-row settings labels seasonal ordering as server-managed and does not offer or accept seasonal move commands; other rows retain their layout controls. Home revalidates on entry, including Back from details, and on the existing 30-second sync timer while Home is open. An in-flight request is reused until it finishes rather than overlapping timer requests.
+
+A failed home fetch removes cached seasonal rows immediately, but retains nonseasonal cached rows and the normal error message. Successful partial responses omit seasonal rows marked `stale` or named in `failedRows`. Seasonal namespace detection (`seasonal_` and legacy `holiday_`) is only a fail-closed cache rule, not an activation list. A later successful response replaces the catalog; no local rule can bring a removed season back.
+
+Roku currently renders only the inline home items: it does not request additional catalog row pages or resolve row IDs as saved categories. Seasonal items use the existing title-details/playback routes. Saved/generated/archived personal categories remain profile-scoped and keep their existing Play all / Shuffle queue path. Launch-argument deep links are not currently implemented. Device-local dates remain in unrelated title/episode availability paths, not seasonal Home membership.
+
 ## Live TV guide
 
 The guide uses a shared two-hour timeline with half-hour markers, channel logos, a live position indicator, and the selected program's synopsis. Listings come from your backend; an absent listing is shown as unavailable and never invented.

@@ -9,9 +9,6 @@ private let qualityChoices = ["2160p", "1080p", "720p"]
 private struct HomeRowEntry: Identifiable {
     let spec: RowSpec
     let enabled: Bool
-    /// A seasonal row outside its active window: listed so it can be pinned,
-    /// but never on Home and never enabled by default (spec §4f).
-    let outOfSeason: Bool
     var id: String { spec.id }
 }
 
@@ -26,6 +23,7 @@ struct SettingsView: View {
     /// Edit mode for the List, toggled by the Home Rows "Reorder" button so the
     /// drag handles are discoverable (long-press drag works outside it too).
     @State private var rowsEditMode: EditMode = .inactive
+    @State private var seasonalRows: [RowSpec] = []
     /// Local draft for the TMDB key field — committed on submit / focus loss,
     /// NOT per keystroke (TmdbClient reads the key at request time, so live
     /// partial prefixes would break in-flight Home/Search requests). A field
@@ -57,6 +55,12 @@ struct SettingsView: View {
             .frame(maxWidth: 860)
         }
         .toolbar(.hidden, for: .navigationBar)
+        .task(id: [settings.backendUrl, settings.syncUrl, settings.syncToken, settings.activeProfileId ?? ""]) {
+            seasonalRows = []
+            let rows = await container.tmdb.seasonalRows()
+            guard !Task.isCancelled else { return }
+            seasonalRows = rows
+        }
         .onAppear {
             if !tmdbKeyDraftLoaded {
                 tmdbKeyDraft = settings.tmdbApiKey
@@ -169,17 +173,11 @@ struct SettingsView: View {
                             .foregroundStyle(entry.enabled ? VelvetColors.textPrimary : VelvetColors.textTertiary)
                             .lineLimit(1)
                         Spacer(minLength: 0)
-                        if entry.outOfSeason {
-                            Text("Out of season")
-                                .font(VelvetFont.body(12))
-                                .foregroundStyle(VelvetColors.textTertiary)
-                                .lineLimit(1)
-                        }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .moveDisabled(!entry.enabled)
+                .moveDisabled(!entry.enabled || entry.spec.id.hasPrefix("seasonal_"))
                 .listRowBackground(VelvetColors.surfaceElevated)
             }
             .onMove(perform: moveRows)
@@ -212,46 +210,15 @@ struct SettingsView: View {
                 .foregroundStyle(VelvetColors.accent)
             }
         } footer: {
-            footerText("Rows appear on Home in this order. Tap to show or hide a row; drag to reorder. Holiday rows only appear during their season, and jump to the top while they're on.")
+            footerText("Tap to show or hide a row; drag to reorder local discovery rows. Seasonal collections are supplied by your backend and keep its order.")
         }
     }
 
-    private var allRows: [RowSpec] { container.tmdb.allRows }
+    private var allRows: [RowSpec] { seasonalRows + container.tmdb.allRows }
 
-    private var seasonalIds: Set<String> { Set(container.tmdb.seasonalRowIds()) }
-
-    private func isOutOfSeason(_ rowId: String) -> Bool {
-        seasonalIds.contains(rowId) && !container.tmdb.isSeasonalRowActive(rowId)
-    }
-
-    /// The default enabled set (no stored order): every row EXCEPT seasonal
-    /// rows outside their window — those would be enabled-by-default noise
-    /// (spec §4f). They stay listed below so they can still be pinned.
-    private var defaultEnabledIds: [String] {
-        let disabled = Set(settings.disabledRowIds)
-        return allRows.map(\.id).filter { !isOutOfSeason($0) && !disabled.contains($0) }
-    }
-
-    /// rowOrder if non-empty (filtered to known ids), else the default enabled
-    /// set in default order — the Android effectiveEnabledOrder() plus the
-    /// seasonal-window rule.
-    ///
-    /// Seasonal rows missing from the stored order are appended once they come
-    /// INTO season, unless explicitly disabled: the order is materialized from
-    /// whatever was in season on the day it was written, so treating "absent"
-    /// as "hidden" would bury every other holiday row forever (spec §4f). Same
-    /// rule as HomeViewModel.resolveSpecs, so Settings and Home agree.
     private var effectiveOrder: [String] {
-        let knownIds = Set(allRows.map(\.id))
-        let order = settings.rowOrder.filter { knownIds.contains($0) }
-        guard !order.isEmpty else { return defaultEnabledIds }
-        let present = Set(order)
-        let disabled = Set(settings.disabledRowIds)
-        let seasonalExtras = allRows.map(\.id).filter {
-            seasonalIds.contains($0) && !present.contains($0)
-                && !disabled.contains($0) && !isOutOfSeason($0)
-        }
-        return order + seasonalExtras
+        SeasonalCatalog.resolve(local: container.tmdb.allRows, seasonal: seasonalRows,
+                                order: settings.rowOrder, disabled: settings.disabledRowIds).map(\.id)
     }
 
     private var rowEntries: [HomeRowEntry] {
@@ -260,9 +227,9 @@ struct SettingsView: View {
         let enabledIds = Set(enabledSpecs.map(\.id))
         let disabledSpecs = allRows.filter { !enabledIds.contains($0.id) }
         return enabledSpecs.map {
-            HomeRowEntry(spec: $0, enabled: true, outOfSeason: isOutOfSeason($0.id))
+            HomeRowEntry(spec: $0, enabled: true)
         } + disabledSpecs.map {
-            HomeRowEntry(spec: $0, enabled: false, outOfSeason: isOutOfSeason($0.id))
+            HomeRowEntry(spec: $0, enabled: false)
         }
     }
 
@@ -270,9 +237,7 @@ struct SettingsView: View {
     /// (an empty persisted order means "all enabled"), then modifies it;
     /// re-enabled rows are appended to the end of the enabled list.
     ///
-    /// A hide is ALSO recorded in `disabledRowIds`: for a seasonal row, dropping
-    /// it from the order is indistinguishable from it merely being out of season
-    /// when the order was written, so only the explicit set can keep it off.
+    /// Explicit disables survive server rows being absent from a later manifest.
     private func toggleRow(_ rowId: String) {
         var order = effectiveOrder
         var disabled = Set(settings.disabledRowIds)
@@ -289,7 +254,7 @@ struct SettingsView: View {
         }
         // Write the disable set FIRST: the rowOrder change is what Home
         // subscribes to, and it must re-resolve against the new membership.
-        settings.disabledRowIds = allRows.map(\.id).filter { disabled.contains($0) }
+        settings.disabledRowIds = disabled.sorted()
         settings.rowOrder = order
     }
 

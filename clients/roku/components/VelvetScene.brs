@@ -58,6 +58,13 @@ function activeRecords(records as dynamic, filterProfile = false as boolean) as 
 end function
 
 sub requestApi(kind as string, path as string, method = "GET" as string, body = invalid as dynamic, context = invalid as dynamic, timeout = 25000 as integer)
+    ' Home may take longer than one sync tick. Never race snapshots on one page.
+    if kind = "home"
+        for each pendingId in m.requests
+            pending = m.requests[pendingId]
+            if pending.kind = "home" and pending.generation = m.generation and pending.epoch = m.backendEpoch then return
+        end for
+    end if
     m.requestSequence += 1
     id = m.requestSequence.ToStr()
     m.requests[id] = {kind: kind, generation: m.generation, epoch: m.backendEpoch, context: context}
@@ -159,6 +166,16 @@ sub onApiResult(event as object)
         if kind = "playerEpisodes" or kind = "segments" then return
         m.model.busy = false
         m.model.message = VStr(VGet(result, "error"), "Something went wrong. Please try again.")
+        if kind = "home"
+            m.catalogRows = VCatalogRowsWithoutSeasonal(m.catalogRows)
+            composeHome()
+            ' Only unsupported v1 may try legacy discovery; share the home slot
+            ' and mark the context so a legacy 404 cannot recurse.
+            if VNum(VGet(result, "status")) = 404 and not VBool(VGet(context.context, "legacyHome"))
+                requestApi("home", "/catalog/home", "GET", invalid, {legacyHome: true}, 40000)
+            end if
+            return
+        end if
         if kind = "resolve" or kind = "canonicalEpisode" or kind = "playDetails" or kind = "nextSeason" or kind = "liveTune" then m.playResolving = false
         publishModel()
         if m.player.visible and (kind = "resolve" or kind = "canonicalEpisode" or kind = "playDetails" or kind = "nextSeason" or kind = "liveTune") then playbackFailure(m.model.message)
@@ -194,8 +211,9 @@ sub onApiResult(event as object)
             publishModel()
         end if
     else if kind = "home"
-        m.catalogRows = VArray(VGet(data, "rows"))
-        m.catalogDate = localDate()
+        m.catalogRows = VCatalogRowsFromResponse(data)
+        ' Legacy discovery must never reintroduce its calendar-selected seasons.
+        if VBool(VGet(context.context, "legacyHome")) then m.catalogRows = VCatalogRowsWithoutSeasonal(m.catalogRows)
         m.model.busy = false
         m.model.message = VStr(VGet(data, "message"))
         composeHome()
@@ -303,10 +321,8 @@ sub navigate(page as string)
     m.model = {page: page, busy: false, message: "", rows: [], items: [], profiles: [], query: "", episodes: []}
     if page = "home"
         composeHome()
-        if m.catalogRows.Count() = 0
-            m.model.busy = true
-            requestApi("home", "/catalog/home?date=" + localDate(), "GET", invalid, invalid, 40000)
-        end if
+        m.model.busy = m.catalogRows.Count() = 0
+        requestApi("home", "/catalog/v1/home", "GET", invalid, invalid, 40000)
         if VStr(m.pendingProfileCreate) <> m.profileId then requestApi("savedCategories", "/categories/saved?profileId=" + VEncode(m.profileId), "GET", invalid, {profileId: m.profileId})
     else if page = "live"
         m.model.busy = false
@@ -361,10 +377,9 @@ sub composeHome()
     for each row in categoryRows()
         rows.Push(row)
     end for
-    today = CreateObject("roDateTime")
-    today.ToLocalTime()
+    ' The server owns seasonal membership and default ordering, not the device clock.
     for each row in m.catalogRows
-        if VSeasonalMovieRowActive(VStr(VGet(row, "id")), today.GetMonth(), today.GetDayOfMonth()) then rows.Push(row)
+        rows.Push(row)
     end for
     m.model.rows = preferencesHomeRows(rows)
     publishModel()
@@ -430,9 +445,8 @@ sub upsertSync(kind as string, record as object)
 end sub
 
 sub onSyncTimer()
-    if m.model.page = "home" and VStr(m.catalogDate) <> localDate()
-        composeHome()
-        requestApi("home", "/catalog/home?date=" + localDate(), "GET", invalid, invalid, 40000)
+    if m.model.page = "home"
+        requestApi("home", "/catalog/v1/home", "GET", invalid, invalid, 40000)
     end if
     if m.failedPushes.Count() > 0
         retry = m.failedPushes.Shift()
@@ -518,6 +532,10 @@ sub goBack()
     if m.history.Count() > 0
         m.generation += 1
         m.model = m.history.Pop()
+        if m.model.page = "home"
+            navigate("home")
+            return
+        end if
         publishModel()
         m.view.CallFunc("restoreFocus")
     else

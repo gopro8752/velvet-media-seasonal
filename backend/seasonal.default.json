@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "rows": [
+    {"id":"seasonal_halloween","title":"Halloween Frights","style":"poster","enabled":true,"start":[8,1],"end":[10,31],"source":{"type":"movies","keyword":3335}},
+    {"id":"seasonal_thanksgiving","title":"Thanksgiving Picks","style":"poster","enabled":true,"start":[11,1],"end":[11,30],"source":{"type":"movies","keyword":4543}},
+    {"id":"seasonal_christmas","title":"Christmas Movies","style":"poster","enabled":true,"start":[11,1],"end":[12,31],"source":{"type":"movies","keyword":207317,"genres":[10751,35,10749]}},
+    {"id":"seasonal_newyear","title":"New Year's Eve","style":"poster","enabled":true,"start":[12,26],"end":[1,5],"source":{"type":"movies","keyword":252123}},
+    {"id":"seasonal_valentines","title":"Valentine's Day","style":"poster","enabled":true,"start":[2,1],"end":[2,15],"source":{"type":"movies","keyword":160404}}
+  ]
+}

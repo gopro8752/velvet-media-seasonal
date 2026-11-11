@@ -1,4 +1,5 @@
 # Local development and generated output
+.tools/
 .DS_Store
 **/.gradle/
 **/.kotlin/

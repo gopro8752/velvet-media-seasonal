@@ -2,6 +2,7 @@
 **
 !Cargo.toml
 !Cargo.lock
+!seasonal.default.json
 !Dockerfile
 !.dockerignore
 !src/

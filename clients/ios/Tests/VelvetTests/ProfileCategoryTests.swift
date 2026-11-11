@@ -38,14 +38,11 @@ final class ProfileCategoryTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: second), originalOther)
     }
 
-    func testChristmasMoviesBeginNovemberFirst() throws {
-        let calendar = Calendar(identifier: .gregorian)
-        let christmas = try XCTUnwrap(SeasonalRow.find("holiday_christmas"))
-        let halloween = try XCTUnwrap(SeasonalRow.find("holiday_halloween"))
-        let thanksgiving = try XCTUnwrap(SeasonalRow.find("holiday_thanksgiving"))
-        let date = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 11, day: 9)))
-        XCTAssertTrue(christmas.isActive(on: date, calendar: calendar))
-        XCTAssertTrue(thanksgiving.isActive(on: date, calendar: calendar))
-        XCTAssertFalse(halloween.isActive(on: date, calendar: calendar))
+    func testSeasonalManifestUsesServerMetadataRatherThanDeviceCalendar() throws {
+        let data = Data(#"{"schemaVersion":1,"revision":"r1","effectiveDate":"2040-08-01","timezone":"UTC","rows":[{"id":"seasonal_any-new-id","title":"Curated by server","style":"landscape","artworkUrl":null}]}"#.utf8)
+        let rows = try JSONDecoder().decode(SeasonalCatalog.Manifest.self, from: data).specs()
+        XCTAssertEqual(rows.map(\.id), ["seasonal_any-new-id"])
+        XCTAssertEqual(rows.first?.title, "Curated by server")
+        XCTAssertEqual(rows.first?.style, .landscape)
     }
 }

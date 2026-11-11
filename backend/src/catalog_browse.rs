@@ -516,6 +516,25 @@ fn recipe(row: Row, page: u64, date: NaiveDate) -> (&'static str, &'static str, 
         query,
     )
 }
+fn seasonal_recipe(keyword: u32, genres: &[u32], page: u64, day: NaiveDate) -> (&'static str, Params) {
+    let mut query = vec![
+        ("page", page.to_string()), ("include_adult", "false".into()),
+        ("language", "en-US".into()), ("sort_by", "popularity.desc".into()),
+        ("with_release_type", "4|5".into()), ("region", "US".into()),
+        ("release_date.lte", day.to_string()), ("with_keywords", keyword.to_string()),
+        ("vote_count.gte", "25".into()),
+    ];
+    if !genres.is_empty() { query.push(("with_genres", genres.iter().map(u32::to_string).collect::<Vec<_>>().join("|"))); }
+    ("discover/movie", query)
+}
+
+pub(crate) async fn seasonal_movies(st: &CatalogState, keyword: u32, genres: &[u32], p: u64, day: NaiveDate) -> Result<(Value, u64, bool), Response> {
+    let (path, query) = seasonal_recipe(keyword, genres, p, day);
+    let (value, stale) = st.browse.get(&st.http, path, &query).await.map_err(IntoResponse::into_response)?;
+    let cards = media_list(&value, Some("movie")).map_err(IntoResponse::into_response)?;
+    Ok((json!(cards), total_pages(&value), stale))
+}
+
 async fn load_row(st: &CatalogState, row: Row, p: u64, day: NaiveDate) -> BrowseResult<Value> {
     if !active(row, day) {
         return Ok(
@@ -535,6 +554,11 @@ async fn load_row(st: &CatalogState, row: Row, p: u64, day: NaiveDate) -> Browse
         json!({"id":row.id,"title":row.title,"style":row.style,"items":cards,
         "page":p,"totalPages":total_pages(&value),"stale":stale}),
     )
+}
+
+pub(crate) async fn general_home_rows(st: &CatalogState, day: NaiveDate) -> Vec<(&'static str, Result<Value, Response>)> {
+    stream::iter(ROWS.iter().copied().filter(|r| !r.id.starts_with("holiday_")).map(|r| async move { (r.id, load_row(st, r, 1, day).await.map_err(IntoResponse::into_response)) }))
+        .buffered(4).collect().await
 }
 
 pub async fn home(
@@ -948,6 +972,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn seasonal_v1_discovery_is_additive_authenticated_and_server_dated() {
+        let app = catalog::router(reqwest::Client::new(), "fixture-token".into(),
+            crate::config::CategoryAi::default(), crate::db::open(":memory:").unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{base}/catalog/v1/seasonal")).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = client.get(format!("{base}/catalog/v1/seasonal")).bearer_auth("fixture-token").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["effectiveDate"], Utc::now().date_naive().to_string());
+        assert_eq!(value["timezone"], "UTC");
+        for row in value["rows"].as_array().unwrap() { assert!(row["id"].as_str().unwrap().starts_with("seasonal_")); }
+        let response = client.get(format!("{base}/catalog/v1/seasonal?date=2000-07-04")).bearer_auth("fixture-token").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // The old-client date override still works, with its original ID and shape.
+        let legacy: Value = client.get(format!("{base}/catalog/rows/holiday_christmas?date=2026-07-04")).bearer_auth("fixture-token").send().await.unwrap().json().await.unwrap();
+        assert_eq!(legacy["id"], "holiday_christmas");
+        assert_eq!(legacy["totalPages"], 0);
+        assert!(legacy.get("schemaVersion").is_none());
+        server.abort();
+    }
+
+    #[test]
+    fn manifest_movie_recipe_is_server_selected_and_has_no_arbitrary_upstream() {
+        let day = NaiveDate::from_ymd_opt(2028, 2, 29).unwrap();
+        let (path, query) = seasonal_recipe(123456, &[35,10751], 2, day);
+        assert_eq!(path, "discover/movie");
+        let query: HashMap<_,_> = query.into_iter().collect();
+        assert_eq!(query["with_keywords"], "123456");
+        assert_eq!(query["with_genres"], "35|10751");
+        assert_eq!(query["page"], "2");
+        assert_eq!(query["release_date.lte"], "2028-02-29");
+        assert_eq!(query["with_release_type"], "4|5");
+        assert_eq!(query["region"], "US");
+        assert_eq!(query["vote_count.gte"], "25");
+        assert_eq!(query["include_adult"], "false");
+    }
     #[test]
     fn malformed_success_payloads_do_not_enter_the_cache() {
         assert!(!valid_payload("discover/movie", &json!({"success":false})));

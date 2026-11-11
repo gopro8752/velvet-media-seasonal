@@ -33,6 +33,12 @@ android {
             versionNameSuffix = "-beta"
             buildConfigField("boolean", "RECOVERY_BETA", "true")
         }
+        create("seasonal") {
+            dimension = "channel"
+            applicationIdSuffix = ".seasonal"
+            versionNameSuffix = "-seasonal"
+            buildConfigField("boolean", "RECOVERY_BETA", "false")
+        }
     }
 
     // Keep supported TV architectures without shipping every browser binary to each device.
@@ -99,4 +105,6 @@ dependencies {
     ksp(libs.room.compiler)
     implementation(libs.datastore.preferences)
     testImplementation(libs.junit)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.mockito:mockito-core:5.14.2")
 }

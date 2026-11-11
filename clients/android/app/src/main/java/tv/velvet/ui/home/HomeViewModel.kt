@@ -32,13 +32,10 @@ import tv.velvet.data.model.MediaType
 import tv.velvet.data.model.PlayTarget
 import tv.velvet.data.model.RowSpec
 import tv.velvet.data.model.RowStyle
-// Star import: the seasonal-row API (isSeasonalRowActive / seasonalRowIds) lives in
-// this package alongside TmdbRepository itself.
-import tv.velvet.data.tmdb.*
+
 import tv.velvet.di.AppContainer
 import tv.velvet.ui.HomeRowOrder
 import java.util.concurrent.ConcurrentHashMap
-import java.time.LocalDate
 import kotlin.math.ceil
 
 /** Per-row loading state. Failed / loaded-empty rows collapse silently in the UI. */
@@ -197,18 +194,20 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
     // ── TMDB rows ────────────────────────────────────────────────────────────
 
     private val _tmdbRows = MutableStateFlow<List<RowSpec>>(emptyList())
-    /**
-     * Resolved row specs in display order: settings.rowOrder (migrated, or allRows when
-     * empty), minus out-of-window seasonal rows, with ACTIVE seasonal rows hoisted to
-     * the top — i.e. right below Continue Watching / My List, above general discovery.
-     */
+    /** Server-ordered seasonal rows, then the user's ordinary discovery order. */
     val tmdbRows: StateFlow<List<RowSpec>> = _tmdbRows
 
     /** Raw per-row fetch results, before cross-row dedupe and history filtering. */
     private val _rawRowStates = MutableStateFlow<Map<String, RowUiState>>(emptyMap())
 
-    /** The row order last handed over by settings; re-applied on resume (date rollover). */
+    /** Ordinary row preferences never override server seasonal ordering. */
     private var lastRowOrder: List<String>? = null
+    private var seasonalRows: List<RowSpec> = emptyList()
+    private var seasonalRefresh: Job? = null
+    private val seasonalItemJobs = mutableListOf<Job>()
+    private var seasonalRevalidation: Job? = null
+    private var homeForeground = false
+    private var seasonalGeneration = 0L
 
     /**
      * Titles the ACTIVE profile has already touched: every media with a progress row,
@@ -355,22 +354,15 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
         }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     init {
-        viewModelScope.launch {
-            var date = LocalDate.now()
-            while (true) {
-                delay(60_000)
-                val today = LocalDate.now()
-                if (today != date) {
-                    date = today
-                    lastRowOrder?.let(::applyRowOrder)
-                }
-            }
-        }
         // Persist public display metadata from normal browsing for the signed launcher.
         // The launcher provider never starts a TMDB request or fetches playback sources.
         viewModelScope.launch {
-            combine(activeProfileId, hero, featuredPool) { profile, hero, pool ->
-                profile to (listOfNotNull(hero) + pool).distinctBy { "${it.type.key}:${it.id}" }.take(12)
+            combine(activeProfileId, _tmdbRows, rowStates) { profile, specs, states ->
+                // Launcher display metadata is persistent; seasonal membership is not.
+                val items = specs.filterNot { it.id.startsWith("seasonal_") }
+                    .flatMap { (states[it.id] as? RowUiState.Loaded)?.items.orEmpty() }
+                    .distinctBy { "${it.type.key}:${it.id}" }.take(12)
+                profile to items
             }.collect { (profile, items) ->
                 runCatching { container.launcherFeaturedCache.remember(profile, items) }
             }
@@ -380,12 +372,14 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
                 dismissQueuePreparation()
             }
         }
-        // React to row-order changes from Settings; fetch each (new) row independently.
+        // Settings (including backend/token) and profile changes invalidate seasonal data.
         viewModelScope.launch {
-            settingsRepository.settings
-                .map { it.rowOrder }
+            combine(settingsRepository.settings, activeProfileId) { settings, profile -> settings to profile }
                 .distinctUntilChanged()
-                .collect { order -> applyRowOrder(order) }
+                .collect { (settings, _) ->
+                    lastRowOrder = settings.rowOrder
+                    refreshSeasonalRows()
+                }
         }
         // Idle featured rotation: advance every 14s (long enough to actually read the
         // overview) until the user pins via first-row focus.
@@ -519,6 +513,7 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
 
     /** Re-fetch every row that failed (the full-screen "Can't reach TMDB" Retry). */
     fun retryFailedRows() {
+        refreshSeasonalRows()
         val failedIds = _rawRowStates.value.filterValues { it is RowUiState.Failed }.keys
         failedIds.forEach { id ->
             _rawRowStates.update { it + (id to RowUiState.Loading) }
@@ -529,17 +524,29 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
     /**
      * Home became the visible destination. Pulls sync state immediately (and tightens
      * the pull cadence to 20s) so Continue Watching shows the position from the phone
-     * without waiting for a timer, and re-resolves the row order in case a seasonal
-     * window opened/closed while the box sat on Home for days.
+     * without waiting for a timer. Seasonal discovery refreshes immediately and every
+     * 60s until Home pauses; only the server decides active collections.
      */
     fun onHomeResumed() {
         syncEngine.onHomeForegrounded()
-        lastRowOrder?.let(::applyRowOrder)
+        if (seasonalRevalidation?.isActive == true) return
+        homeForeground = true
+        refreshSeasonalRows()
+        seasonalRevalidation = viewModelScope.launch {
+            while (true) {
+                delay(SEASONAL_REVALIDATION_MS)
+                refreshSeasonalRows()
+            }
+        }
     }
 
     /** Home left the foreground (player, details, settings, background). */
     fun onHomePaused() {
         syncEngine.onHomeBackgrounded()
+        seasonalRevalidation?.cancel()
+        seasonalRevalidation = null
+        homeForeground = false
+        refreshSeasonalRows() // Invalidate/cancel old work, but never fetch while paused.
     }
 
     fun toggleHeroMyList() {
@@ -574,40 +581,49 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
 
     // ── Internals ────────────────────────────────────────────────────────────
 
-    /**
-     * Resolve the display order: migrate renamed ids (trending_movies -> popular_now),
-     * APPEND ids introduced after the stored order was written (spec §4g — without this
-     * the five v1.2.0 holiday rows are invisible to anyone who ever touched Settings →
-     * Home Rows), drop seasonal rows outside their window entirely, and hoist the ACTIVE
-     * seasonal rows to the top of the discovery block. Rows already fetched keep their
-     * state — re-applying (settings edit, date rollover) never re-fetches what we have.
-     *
-     * The append is recomputed on every READ, so Home surfaces a newly in-window seasonal
-     * row whether or not Settings ever persisted its id.
-     */
+    /** Clear previous seasonal rows immediately, including late in-flight responses. */
+    private fun refreshSeasonalRows() {
+        seasonalRefresh?.cancel()
+        seasonalItemJobs.forEach { it.cancel() }
+        seasonalItemJobs.clear()
+        val generation = ++seasonalGeneration
+        seasonalRows = emptyList()
+        _rawRowStates.update { states -> states.filterKeys { !it.startsWith("seasonal_") } }
+        pinned.value = null
+        applyRowOrder(lastRowOrder ?: emptyList())
+        if (!homeForeground) return
+        seasonalRefresh = viewModelScope.launch {
+            val rows = try {
+                tmdb.seasonalRows()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                emptyList() // Old/offline servers hide seasonal content; no local fallback.
+            }
+            if (generation != seasonalGeneration) return@launch
+            seasonalRows = rows
+            applyRowOrder(lastRowOrder ?: emptyList())
+        }
+    }
+
+    /** Preserve ordinary preferences while always taking the server's seasonal order. */
     private fun applyRowOrder(order: List<String>) {
         lastRowOrder = order
-        val all = tmdb.allRows
+        val all = seasonalRows + tmdb.allRows
         val migrated = HomeRowOrder.migrateAndAppend(order, all.map { it.id })
-        val requested =
-            if (migrated.isEmpty()) all
-            else migrated.mapNotNull { id -> all.firstOrNull { it.id == id } }
-        val seasonalIds: Set<String> =
-            runCatching { tmdb.seasonalRowIds().toSet() }.getOrDefault(emptySet())
-        val visible = requested.filter { spec ->
-            spec.id !in seasonalIds || tmdb.isSeasonalRowActive(spec.id)
-        }
-        val specs = visible.filter { it.id in seasonalIds } + visible.filterNot { it.id in seasonalIds }
+        val specs = migrated.mapNotNull { id -> all.firstOrNull { it.id == id } }
         _tmdbRows.value = specs
+        val generation = seasonalGeneration
         specs.forEach { spec ->
             if (!_rawRowStates.value.containsKey(spec.id)) {
                 _rawRowStates.update { it + (spec.id to RowUiState.Loading) }
-                viewModelScope.launch { fetchRow(spec.id) }
+                val job = viewModelScope.launch { fetchRow(spec.id, generation) }
+                if (spec.id.startsWith("seasonal_")) seasonalItemJobs += job
             }
         }
     }
 
-    private suspend fun fetchRow(rowId: String) {
+    private suspend fun fetchRow(rowId: String, generation: Long = seasonalGeneration) {
         val state = try {
             RowUiState.Loaded(tmdb.rowItems(rowId))
         } catch (ce: CancellationException) {
@@ -615,7 +631,9 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
         } catch (_: Throwable) {
             RowUiState.Failed
         }
-        _rawRowStates.update { it + (rowId to state) }
+        if (!rowId.startsWith("seasonal_") || generation == seasonalGeneration) {
+            _rawRowStates.update { it + (rowId to state) }
+        }
     }
 
     /**
@@ -768,5 +786,6 @@ class HomeViewModel(container: AppContainer) : ViewModel() {
 
     private companion object {
         const val HERO_ROTATION_MS = 14_000L
+        const val SEASONAL_REVALIDATION_MS = 60_000L
     }
 }

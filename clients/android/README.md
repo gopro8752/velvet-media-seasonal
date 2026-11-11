@@ -61,6 +61,72 @@ receiver identity. Configure its backend at runtime. Stable Velour continues
 opening stable Velvet. To build for one device architecture and save disk space,
 add `-PvelvetAbis=arm64-v8a` (or another supported ABI) to a Gradle command.
 
+## Server-managed seasonal discovery
+
+Home fetches `/catalog/v1/seasonal` on foreground and every 60 seconds while Home
+remains resumed, plus retry, settings and profile changes while visible. Pausing or
+leaving Home stops the timer, cancels seasonal manifest/item requests and invalidates
+late responses; background changes defer seasonal requests until the next resume.
+Each refresh removes previous seasonal rows before fetching the fresh manifest;
+generation guards prevent older responses from restoring them. No device-local date
+filtering decides which seasonal rows are active.
+The server supplies the active rows, titles, styles, artwork metadata and ordering;
+stored Home row order cannot override them. Every `seasonal_` item request uses
+`/catalog/v1/seasonal/rows/:id?page=N` directly, with no local rotation or seasonal
+cache. The configured backend bearer token is used only on its validated origin,
+redirects are refused, and standalone TMDB credentials are never sent. An old,
+unconfigured, invalid or unavailable backend hides seasonal sections; ordinary
+TMDB discovery and personal categories remain available as before.
+
+Settings lists active seasonal rows as **Managed by server**, without local toggle
+or reorder controls. Seasonal rows do not become saved AI categories, Play All /
+Shuffle queues, or category deep-link targets. Cards still open normal movie/show
+details and playback. The signed launcher receives ordinary discovery metadata
+only: its featured cache uses a new namespace so old locally curated seasonal
+picks cannot reappear. Its Continue Watching, My List, saved categories and media
+launch intents are unchanged; the launcher performs no seasonal network requests.
+
+### Isolated seasonal experiment
+
+```sh
+./gradlew :app:testSeasonalDebugUnitTest :app:assembleSeasonalDebug -PvelvetAbis=arm64-v8a
+node --test tests/*.test.cjs
+```
+
+This builds **Velvet Seasonal Lab**, `tv.velvet.seasonal`, version suffix
+`-seasonal`, separately from both stable and beta. Preferences, profiles, launcher
+provider and signature permission use that separate application identity. Configure
+its backend at runtime. Stable Velour still opens stable Velvet; no device install
+or deployment is part of these commands.
+
+`HomeSeasonalLifecycleTest` runs the real HomeViewModel with virtual coroutine time
+in the native Gradle unit-test suite. It covers the 60-second foreground bound,
+server removal/reordering/metadata and item changes, background suppression, request
+cancellation, duplicate resume/pause events, and stale-generation responses. Android
+storage and sync boundaries are mocked; this is not a Compose or device test.
+
+### SDK-free seasonal JVM slice
+
+`tests/seasonal-jvm.py` compiles the actual request builder, seasonal catalog parser,
+media models and row-order policy with JUnit. It extracts the existing settings
+value type from its DataStore source, substituting only its empty-string default
+constant; it does **not** test Android DataStore, ViewModel lifecycle, Compose,
+resources, APK packaging or device behavior. Node migration tests are source
+integration guards, not native UI tests. Run the Gradle commands above before
+installing on a device.
+
+Supply a JDK via `JAVA_HOME`, set `TMPDIR` to scratch storage outside the repo, and
+put the following Maven jars in a tool directory: Kotlin compiler-embeddable,
+stdlib and script-runtime 2.1.20; kotlin-reflect 1.6.10; trove4j 1.0.20200330;
+JetBrains annotations 13.0; kotlinx-coroutines-core-jvm 1.9.0;
+kotlinx-serialization core/json-jvm 1.7.3; OkHttp 4.12.0; okio-jvm 3.6.0;
+JUnit 4.13.2; hamcrest-core 1.3. This portable compiler is separate from the
+project's pinned Android Kotlin plugin; it is a fallback check, not a native build.
+
+```sh
+python3 tests/seasonal-jvm.py --tools-dir /path/to/jvm-test-jars
+```
+
 ## Source layout
 
 | Directory | Purpose |

@@ -16,13 +16,8 @@ final class SettingsStore: ObservableObject {
     @Published var rowOrder: [String] { didSet { defaults.set(rowOrder, forKey: "row_order") } }
     /// Row ids the user EXPLICITLY switched off in Settings → Home Rows.
     ///
-    /// `rowOrder` alone cannot express this for seasonal rows: one that is out
-    /// of season is simply absent from the order the moment it gets written, so
-    /// "absent" and "deliberately hidden" are indistinguishable. Without this
-    /// set, a single Settings edit made in October (when only Halloween is in
-    /// season) permanently suppresses Thanksgiving, Christmas, New Year's and
-    /// Valentine's — they are never in the stored order again and nothing ever
-    /// re-adds them (spec §4f).
+    /// Server collections absent from a manifest may return later. Persist an
+    /// explicit disable independently of membership in the current row order.
     @Published var disabledRowIds: [String] { didSet { defaults.set(disabledRowIds, forKey: "disabled_row_ids") } }
     @Published var autoplayNext: Bool { didSet { defaults.set(autoplayNext, forKey: "autoplay_next") } }
     @Published var autoplayCountdownSecs: Int { didSet { defaults.set(autoplayCountdownSecs, forKey: "autoplay_countdown") } }
