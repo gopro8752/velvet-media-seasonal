@@ -24,7 +24,9 @@ jobs:
         run: printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify clean build context contains embedded runtime inputs
-        run: python3 scripts/test_seasonal_build_context.py
+        run: |
+          python3 scripts/test_seasonal_build_context.py
+          python3 scripts/test_seasonal_image_smoke.py
       - name: Build local image for this exact checked-out SHA
         shell: bash
         run: |

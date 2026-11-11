@@ -5,6 +5,7 @@ No registry operations, production configuration, credentials, or device access.
 The --binary mode checks the same HTTP assertions but does NOT verify an image.
 """
 import argparse
+import ipaddress
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
@@ -90,7 +91,7 @@ def server(args, root):
     docker('network', 'create', '--internal', name)
     try:
         docker('run', '--detach', '--pull=never', '--name', name,
-               '--network', name, '--publish', '127.0.0.1::8799',
+               '--network', name,
                '--mount', f'type=bind,src={root},dst=/config,readonly',
                '--tmpfs', '/data:rw,nosuid,nodev,size=64m',
                '--env', 'VELVET_CONFIG=/config/velvet.toml',
@@ -98,11 +99,21 @@ def server(args, root):
                '--env', 'VELVET_SEASONAL_MANIFEST=/config/seasonal.json',
                '--env', 'VELVET_TMDB_KEY=', '--env', 'RUST_LOG=warn', args.image)
         state = json.loads(docker('inspect', name))[0]
-        bindings = state['NetworkSettings']['Ports']['8799/tcp']
-        require(len(bindings) == 1 and bindings[0]['HostIp'] == '127.0.0.1', bindings)
         network = json.loads(docker('network', 'inspect', name))[0]
         require(network['Internal'] is True, 'Smoke network must deny external routing')
-        yield 'http://127.0.0.1:' + bindings[0]['HostPort']
+        require(state['State']['Running'], 'Smoke container exited before HTTP checks')
+        settings = state['NetworkSettings']
+        require(not any(settings.get('Ports', {}).values()), 'Smoke must not publish host ports')
+        require(set(settings['Networks']) == {name}, 'Smoke must use only its internal network')
+        endpoint = settings['Networks'][name]
+        require(not endpoint.get('Gateway'), 'Internal smoke must not have an external gateway')
+        address = ipaddress.ip_address(endpoint['IPAddress'])
+        subnets = [ipaddress.ip_network(config['Subnet']) for config in network['IPAM']['Config'] if config.get('Subnet')]
+        require(address.is_private and any(address in subnet for subnet in subnets), 'Expected private internal bridge address')
+        # Internal-only networks have no default gateway, so Docker cannot
+        # publish ports. The Linux Docker host can reach the internal bridge
+        # directly; no proxy, non-internal network, or outbound route is needed.
+        yield f'http://{address}:8799'
     except BaseException:
         # Keep startup/HTTP failures actionable while the disposable container exists.
         try:
