@@ -26,7 +26,12 @@ class SeasonalIntegration(unittest.TestCase):
         profile = view.split(".onChange(of: activeProfileId)")[1].split("}\n")[0]
         self.assertIn("onHomeAppear()", profile)
         home = (ROOT / "UI/Home/HomeViewModel.swift").read_text()
-        self.assertIn("settings.objectWillChange", home)
+        self.assertNotIn("settings.objectWillChange", home)
+        for publisher in ["settings.$streamSources", "settings.$syncUrl", "settings.$syncToken", "settings.$activeProfileId"]:
+            self.assertIn(publisher, home)
+        changes = home.split("// Invalidate synchronously")[1].split("// Idle featured")[0]
+        self.assertLess(changes.index(".removeDuplicates()"), changes.index(".handleEvents("))
+        self.assertLess(changes.index(".handleEvents("), changes.index(".debounce("))
         self.assertIn("refreshSeasonalRows()", home)
 
     def test_home_visibility_and_scene_gate_scheduler_and_sync(self):

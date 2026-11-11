@@ -177,7 +177,11 @@ A content query edit need not rebuild the image. A cached upstream response does
 not keep a removed/disabled/inactive manifest row alive.
 
 Android/iOS refresh immediately and every 60 seconds while Home is foregrounded,
-plus Home retry/refresh and profile/settings changes. Pause/background cancels
+plus Home retry/refresh and profile/connection changes. iOS deduplicates backend
+URL, sync origin/token and profile publisher values, invalidates synchronously,
+and debounces only replacement requests (50 ms). Routine sync-status and unrelated
+preferences do not cancel/clear/refetch seasonal rows or hero; row order/visibility
+preferences re-resolve existing rows without a network refresh. Pause/background cancels
 seasonal tasks and invalidates superseded generations. Neither has a persistent
 seasonal cache or local calendar. Backend credentials
 are restricted to the validated backend origin and seasonal redirects are
@@ -238,8 +242,9 @@ gzip -dc velvet-seasonal-sha-<EXACT_SHA>.tar.gz | docker load
 python3 scripts/seasonal_image_smoke.py --image velvet-seasonal:sha-<EXACT_SHA>
 ```
 
-The image smoke creates a unique `--internal` Docker network, publishes only a
-random `127.0.0.1` port, binds a synthetic config directory read-only, uses a
+The image smoke creates a unique `--internal` Docker network and **publishes no
+host ports**. A helper container on that same internal network drives HTTP over
+`docker exec`; the candidate binds a synthetic config directory read-only, uses a
 64 MiB tmpfs database and an inert loopback NNTP provider. It never pulls an
 image (`--pull=never`), passes upstream secrets, mounts a real database, or calls
 media playback. It checks real bearer auth, UTC descriptors, page 1/2/bounds,
@@ -255,13 +260,21 @@ Local source-binary mode runs the same HTTP assertions without Docker:
 python3 scripts/seasonal_image_smoke.py --binary backend/target/debug/velvet-backend
 ```
 
-This is **not** an image test. In this workspace that command passed against the
-existing real source-built executable. Docker's client exists but its daemon is
-unavailable (`Cannot connect to the Docker daemon`), so local container build,
-image inspection/save and internal-network HTTP execution remain blocked. No
-hosted artifact run is claimed here. The separate existing seasonal-contract CI
-covers Rust plus portable production Kotlin/Swift networking; portable Swift is
-not an Xcode/iOS UI build, and neither HTTP harness proves device playback.
+This is **not** an image test. Local source-binary HTTP execution passed, but the
+local Docker daemon is unavailable (`Cannot connect to the Docker daemon`).
+The image was subsequently built and exercised on a disposable hosted runner:
+[artifact run 42962095985](https://github.com/gopro8752/velvet-media-seasonal/actions/runs/42962095985)
+at `d9c3f3053d387911a8feee0ae9ea20215332c18c` passed real isolated image HTTP
+smoke and native Android build/tests (208 tests, zero failures/errors/skips).
+The source run at that head also passed all four required checks. These are
+**historical exact-head results**, not approval for a newer commit: each change
+requires fresh CI, rebuilt exact-SHA artifacts, and independent tester review.
+Use the current PR checks/artifact provenance, not these historical hashes, to
+select a candidate. Portable Swift is not an Xcode/iOS application build, and
+neither HTTP harness proves device playback. The Apple Combine subscription
+regression job separately executes the actual Home subscription and production
+seasonal scheduler on a standard public-repository macOS runner; its settings
+storage/UI callbacks are fixtures, not a full app or device test.
 
 ## Release gate, pilot and rollback (not executed by this change)
 

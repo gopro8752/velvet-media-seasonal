@@ -176,12 +176,18 @@ final class HomeViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Invalidate synchronously before a preference write can let an old
-        // response publish; debounce only the replacement network request.
-        settings.objectWillChange
-            .sink { [weak self] _ in self?.seasonalRefresh.invalidate() }
-            .store(in: &cancellables)
-        settings.objectWillChange
+        // Invalidate synchronously for connection/profile changes, not routine
+        // sync status or unrelated preferences. @Published emits the NEW value
+        // before storage changes, so combine publisher values (not settings reads).
+        // Row order/visibility preferences are handled above without a refetch.
+        Publishers.CombineLatest4(
+            settings.$streamSources.map { $0.first?.baseUrl },
+            settings.$syncUrl, settings.$syncToken, settings.$activeProfileId
+        )
+            .map { source, sync, token, profile in [source ?? sync, sync, token, profile] }
+            .removeDuplicates()
+            .dropFirst()
+            .handleEvents(receiveOutput: { [weak self] _ in self?.seasonalRefresh.invalidate() })
             .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 self?.scheduleSeasonalRefresh()
