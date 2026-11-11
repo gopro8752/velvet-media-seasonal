@@ -57,9 +57,9 @@ jobs:
     name: seasonal-contract
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      TMPDIR: ${{ runner.temp }}
     steps:
+      - name: Use runner-owned temporary directory
+        run: printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
